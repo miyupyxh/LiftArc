@@ -1,0 +1,4 @@
+minApiVersion=102
+targetApiVersion=102
+staticScope=true
+description=升弧 - iOS 风格锁屏上滑联动与屏幕圆角弧形描边（原 LockBar 锁屏小白条）。

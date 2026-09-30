@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:name=".LockBarApp"
+        android:allowBackup="false"
+        android:icon="@drawable/ic_app_icon"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LockBar"
+        tools:ignore="MissingApplicationIcon">
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            诊断数据回传通道（SystemUI → App）。
+
+            必须 exported=true：SystemUI 与本模块签名不同，走不了 signature 权限，
+            而 libxposed 的 getRemotePreferences 对 hook 进程是只读的（见 DiagProvider 的注释），
+            这是目前唯一可靠的回传路径。防护写在 DiagProvider.call 里：
+            method 白名单 + 长度上限 + 只收不给。
+        -->
+        <provider
+            android:name=".DiagProvider"
+            android:authorities="com.lockbar.app.diag"
+            android:exported="true" />
+    </application>
+
+</manifest>

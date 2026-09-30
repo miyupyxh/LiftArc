@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">升弧</string>
+    <string name="app_name_en">LiftArc</string>
+
+    <!-- 顶部动作 -->
+    <string name="action_restart_systemui">重启系统界面</string>
+    <string name="action_restart_started">正在重启系统界面…</string>
+    <string name="action_restart_done">SystemUI 已结束，界面马上回来</string>
+    <string name="action_restart_failed">重启失败</string>
+    <string name="action_done">完成</string>
+    <string name="action_back">返回</string>
+
+    <!-- 底栏 -->
+    <string name="tab_home">首页</string>
+    <string name="tab_params">参数</string>
+    <string name="tab_settings">设置</string>
+
+    <!-- 首页：模块状态（KernelSU 大绿框） -->
+    <string name="status_title">模块状态</string>
+    <string name="status_activated">已激活</string>
+    <string name="status_not_activated">未激活</string>
+    <string name="status_activated_summary">LSPosed 服务已连接，配置改动即时生效</string>
+    <string name="status_not_activated_summary">未连接到 LSPosed，配置暂存本地，激活后自动同步</string>
+    <string name="status_scope">作用域：com.android.systemui</string>
+    <string name="status_working_version">版本 %1$s</string>
+
+    <!-- 首页：信息 -->
+    <string name="home_intro_title">模块介绍</string>
+    <string name="home_intro">仿照 iOS 风格的锁屏上滑动画</string>
+    <string name="home_info_title">模块信息</string>
+    <string name="info_module_name">模块名称</string>
+    <string name="info_module_name_value">升弧 (LiftArc)</string>
+    <string name="info_module_version">模块版本</string>
+    <string name="info_hook_version">钩子版本</string>
+    <string name="info_hook_version_value">libxposed API 102</string>
+    <string name="info_scope">作用域</string>
+    <string name="info_scope_value">com.android.systemui</string>
+    <string name="info_service">LSPosed 服务</string>
+    <string name="info_service_on">已连接</string>
+    <string name="info_service_off">未连接</string>
+
+    <!-- 基本 -->
+    <string name="group_general">常规</string>
+    <string name="pref_enabled">启用模块</string>
+    <string name="pref_enabled_summary">总开关，关闭后锁屏恢复原样</string>
+    <string name="pref_show_handle">显示小白条</string>
+    <string name="pref_show_handle_summary">在锁屏底部显示系统风格指示条</string>
+    <string name="pref_parallax">上滑联动</string>
+    <string name="pref_parallax_summary">上滑时壁纸、时间、快捷方式一起上移</string>
+    <string name="pref_intercept_swipe">拦截系统上滑解锁</string>
+    <string name="pref_intercept_swipe_summary">关掉系统自己的上滑解锁，改成只有时间跟着手指上移，到时间一半就停住，松手弹性归位；通知列表还能划，左右下角快捷方式不受影响</string>
+    <string name="pref_hint_page">小横条上方文字</string>
+    <string name="pref_hint_page_summary">文字内容、位置、大小、粗细、字体、颜色</string>
+
+    <!-- 手感 -->
+    <string name="group_feel">手感</string>
+    <string name="pref_drag_ratio">跟手程度</string>
+    <string name="pref_drag_ratio_summary">数值越大，内容跟随手指越紧</string>
+    <string name="pref_release_return">松手回弹</string>
+    <string name="pref_release_return_summary">拉到一半以下松手会弹回原位；关闭则停在原地。拉到一半以上松手直接进解锁</string>
+    <string name="pref_haptic">触感反馈</string>
+    <string name="pref_haptic_summary">越过阈值与回弹时轻微震动</string>
+    <string name="pref_handle_alpha">小白条不透明度</string>
+    <string name="pref_handle_alpha_summary">拖动调节指示条的可见程度</string>
+
+    <!-- 弧形描边 -->
+    <string name="group_arc">弧形描边</string>
+    <string name="pref_arc_enabled">启用弧形描边</string>
+    <string name="pref_arc_enabled_summary">按屏幕圆角绘制弧形光边</string>
+    <string name="pref_arc_width">描边宽度</string>
+    <string name="pref_arc_width_summary">光边的粗细</string>
+    <string name="pref_arc_alpha">描边不透明度</string>
+    <string name="pref_arc_alpha_summary">整体亮度</string>
+    <string name="pref_arc_color">描边颜色</string>
+    <string name="pref_arc_color_summary">点击打开取色器</string>
+
+    <string name="color_white">月白</string>
+    <string name="color_blue">星蓝</string>
+    <string name="color_cyan">青岚</string>
+    <string name="color_gold">流金</string>
+    <string name="color_purple">雾紫</string>
+
+    <!-- 小横条文字（独立设置页） -->
+    <string name="hint_title">小横条文字</string>
+    <string name="hint_group_preview">预览</string>
+    <string name="hint_group_content">内容</string>
+    <string name="hint_group_style">样式</string>
+    <string name="hint_group_position">位置</string>
+
+    <string name="pref_hint_text">文字内容</string>
+    <string name="pref_hint_text_summary">显示在小横条上方的一行小字，留空则不显示</string>
+    <string name="pref_hint_text_label">例如：上滑解锁</string>
+
+    <string name="pref_hint_size">字体大小</string>
+    <string name="pref_hint_size_summary">小字的字号（sp）</string>
+    <string name="pref_hint_weight">字体粗细</string>
+    <string name="pref_hint_weight_summary">100 最细，900 最粗</string>
+    <string name="pref_hint_font">字体</string>
+    <string name="pref_hint_font_summary">字体族</string>
+    <string name="pref_hint_color">文字颜色</string>
+    <string name="pref_hint_color_summary">点击打开取色器</string>
+    <string name="pref_hint_gap">与小横条的距离</string>
+    <string name="pref_hint_gap_summary">文字离底部小横条多远（dp）</string>
+    <string name="pref_hint_offset_x">水平偏移</string>
+    <string name="pref_hint_offset_x_summary">左右挪动文字，0 = 居中（dp）</string>
+
+    <string name="font_default">系统默认</string>
+    <string name="font_serif">衬线</string>
+    <string name="font_mono">等宽</string>
+    <string name="font_cursive">手写</string>
+    <string name="font_condensed">窄体</string>
+
+    <!-- 设置页 -->
+    <string name="group_appearance">外观</string>
+    <string name="group_about">关于</string>
+    <string name="settings_theme">主题设置</string>
+    <string name="settings_theme_summary">深浅色、动态取色、底栏样式</string>
+    <string name="settings_about">关于</string>
+    <string name="settings_about_summary">版本、作者</string>
+    <string name="settings_log">模块日志</string>
+    <string name="settings_log_summary">加载、作用域与 hook 安装记录，出问题先看这里</string>
+
+    <!-- 主题设置（搬 KernelSU 主题设置页，名字换成本模块的） -->
+    <string name="theme_mode_system">系统</string>
+    <string name="theme_mode_light">浅色</string>
+    <string name="theme_mode_dark">深色</string>
+    <string name="theme_dynamic">动态取色</string>
+    <string name="theme_dynamic_summary">按壁纸 / 关键色生成整套配色</string>
+    <string name="theme_key_color">关键色</string>
+    <string name="theme_color_style">色彩风格</string>
+    <string name="theme_color_spec">色彩规范</string>
+    <string name="theme_spec_2021">2021 规范</string>
+    <string name="theme_spec_2025">2025 规范</string>
+    <string name="theme_blur">模糊效果</string>
+    <string name="theme_blur_summary">给底栏开磨砂玻璃，需要设备支持运行时着色</string>
+    <string name="theme_floating">浮动底栏</string>
+    <string name="theme_floating_summary">底栏改成悬浮胶囊；关掉是贴底整条</string>
+    <string name="theme_glass">玻璃效果</string>
+    <string name="theme_glass_summary">浮动底栏走真模糊 + 边缘高光</string>
+    <string name="theme_preview">预览</string>
+
+    <!-- 关于 -->
+    <string name="about_title">关于</string>
+    <string name="about_author">作者</string>
+    <string name="about_author_name">MiMo-v2.6-Flash</string>
+    <string name="about_author_summary">模块设计与实现</string>
+    <string name="about_module_name">模块名称</string>
+    <string name="about_module_version">模块版本</string>
+    <string name="about_hook_version">钩子版本</string>
+    <string name="about_scope">作用域</string>
+    <string name="about_framework">框架</string>
+    <string name="about_framework_value">LSPosed (libxposed API 102)</string>
+    <string name="about_module">模块信息</string>
+    <string name="about_module_summary">锁屏上滑联动与屏幕圆角弧光</string>
+
+    <!-- 引用与致谢（关于页 → 引用与致谢，二级页） -->
+    <string name="about_credits">引用与致谢</string>
+    <string name="about_credits_summary">本模块引用的开源项目与设计参考</string>
+    <string name="credits_title">引用与致谢</string>
+    <string name="credits_group_dep">代码依赖</string>
+    <string name="credits_group_ref">设计与实现参考</string>
+    <string name="credits_note">以上项目均按各自的开源许可证发布，版权归各自作者所有。点击条目可打开项目主页。</string>
+
+    <string name="credit_miuix">MiuiX</string>
+    <string name="credit_miuix_desc">UI 框架、偏好项与二级页转场</string>
+    <string name="credit_compose">Jetpack Compose</string>
+    <string name="credit_compose_desc">Compose 运行时、Foundation、Material3</string>
+    <string name="credit_libxposed">libxposed</string>
+    <string name="credit_libxposed_desc">Xposed 模块 API 102（LSPosed）</string>
+    <string name="credit_kotlinx">kotlinx</string>
+    <string name="credit_kotlinx_desc">协程、Flow 与数据序列化</string>
+
+    <string name="credit_kernel">KernelSU</string>
+    <string name="credit_kernel_desc">悬浮底栏、二级页转场与页面结构</string>
+    <string name="credit_liquidglass">AndroidLiquidGlass</string>
+    <string name="credit_liquidglass_desc">镜面高光、折射、内阴影（ui/liquid）</string>
+    <string name="credit_hyperbetter">HyperBetter</string>
+    <string name="credit_hyperbetter_desc">锁屏弧形柔光的视觉参考</string>
+
+    <string name="license_apache2">Apache-2.0</string>
+    <string name="license_gpl3">GPL-3.0</string>
+    <string name="license_ref"></string>
+
+    <!-- 诊断分组标题（设置页使用；参数页的诊断正文已移除） -->
+    <string name="group_debug">诊断</string>
+
+    <!-- 安全模式 -->
+    <string name="safety_mode_title">安全模式已启用</string>
+    <string name="safety_mode_hint">系统界面在短时间内反复启动，本模块已自动停止安装全部 hook，以便让系统界面先能起来。</string>
+    <string name="safety_mode_exit">退出安全模式</string>
+    <string name="safety_mode_exit_hint">退出后需重启系统界面，hook 才会重新安装</string>
+    <string name="safety_mode_exit_done">已请求退出，请重启系统界面</string>
+
+    <!-- 模块日志页 -->
+    <string name="log_title">模块日志</string>
+    <string name="log_group_env">环境</string>
+    <string name="log_service_ok">LSPosed 服务已连接</string>
+    <string name="log_service_ok_summary">模块与框架通信正常，日志会持续更新</string>
+    <string name="log_service_missing">LSPosed 服务未连接</string>
+    <string name="log_service_missing_summary">请在 LSPosed 中启用本模块，或重启手机后重试</string>
+    <string name="log_lines_label">日志条数</string>
+    <string name="log_lines_value">%1$d 条</string>
+    <string name="log_empty_short">暂无</string>
+    <string name="log_group_content">日志内容</string>
+    <string name="log_copy">复制日志</string>
+    <string name="log_copied">已复制</string>
+    <string name="log_export">导出文件</string>
+    <string name="log_exported">已保存</string>
+    <string name="log_export_failed">导出失败</string>
+    <string name="log_export_hint">导出为 txt 存入「下载」，并自动弹出分享面板</string>
+    <string name="log_empty">还没有日志。\n\n请依次确认：\n1. LSPosed 中已启用本模块\n2. 作用域勾选了「系统界面」(com.android.systemui)\n3. 重启系统界面或重启手机\n\n三项都确认过仍为空，请到 LSPosed 的日志页查看。</string>
+</resources>

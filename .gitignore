@@ -1,0 +1,37 @@
+# ---- Gradle / AGP 构建产物（含本机绝对路径，绝不上传）----
+.gradle/
+build/
+app/build/
+local.properties
+
+# ---- IDE ----
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ---- 签名材料 ----
+*.jks
+*.keystore
+*.pepk
+*.p12
+*.pfx
+keystore.properties
+
+# ---- 可执行产物 / 包 ----
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# ---- 构建日志 ----
+*.log
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 私有开发笔记（含对其他模块的具名崩溃分析，不公开）----
+NOTES.md
