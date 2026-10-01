@@ -1,3 +1,9 @@
+# ---- Gradle / AGP 构建产物（含本机绝对路径，绝不上传）----
+.gradle/
+build/
+app/build/
+local.properties
+
 # ---- IDE ----
 .idea/
 *.iml
@@ -26,3 +32,6 @@ keystore.properties
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---- 私有开发笔记（含对其他模块的具名崩溃分析，不公开）----
+NOTES.md
