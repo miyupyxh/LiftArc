@@ -50,13 +50,15 @@
     <string name="pref_parallax_summary">上滑时壁纸、时间、快捷方式一起上移</string>
     <string name="pref_intercept_swipe">拦截系统上滑解锁</string>
     <string name="pref_intercept_swipe_summary">关掉系统自己的上滑解锁，改成只有时间跟着手指上移，到时间一半就停住，松手弹性归位；通知列表还能划，左右下角快捷方式不受影响</string>
+    <string name="pref_handle_wide">扩大触控范围</string>
+    <string name="pref_handle_wide_summary">触控区向左右扩展到屏幕两边（底部 36dp 整条都能按到），条本体外观不变</string>
     <string name="pref_hint_page">小横条上方文字</string>
     <string name="pref_hint_page_summary">文字内容、位置、大小、粗细、字体、颜色</string>
 
     <!-- 手感 -->
     <string name="group_feel">手感</string>
     <string name="pref_drag_ratio">跟手程度</string>
-    <string name="pref_drag_ratio_summary">数值越大，内容跟随手指越紧</string>
+    <string name="pref_drag_ratio_summary">数值越大越贴手：100% 时内容与手指完全同步（1:1），需要滑满整屏才拉满；数值越小行程越短、轻轻一滑就到底，但内容会跑在手指前面。拖满行程后不管数值多少都会完全滑出屏幕，不会卡在半屏</string>
     <string name="pref_release_return">松手回弹</string>
     <string name="pref_release_return_summary">拉到一半以下松手会弹回原位；关闭则停在原地。拉到一半以上松手直接进解锁</string>
     <string name="pref_haptic">触感反馈</string>
@@ -68,6 +70,10 @@
     <string name="group_arc">弧形描边</string>
     <string name="pref_arc_enabled">启用弧形描边</string>
     <string name="pref_arc_enabled_summary">按屏幕圆角绘制弧形光边</string>
+    <string name="pref_arc_dim">iOS 式压暗</string>
+    <string name="pref_arc_dim_summary">上升的锁屏整块压暗，下方露出正常壁纸，靠明暗对比自然显出那条弧线，不画描边。关掉则回到只画一条光边</string>
+    <string name="pref_dim_strength">压暗强度</string>
+    <string name="pref_dim_strength_summary" formatted="false">上滑时整块压暗的深浅：越大越黑（默认 57% 为原效果），100% 纯黑、调低更通透；仅压暗模式生效</string>
     <string name="pref_arc_width">描边宽度</string>
     <string name="pref_arc_width_summary">光边的粗细</string>
     <string name="pref_arc_alpha">描边不透明度</string>

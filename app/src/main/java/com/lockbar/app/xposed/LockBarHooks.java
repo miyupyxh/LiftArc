@@ -103,19 +103,34 @@ final class LockBarHooks {
                 .setId("lockbar-touch")
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(chain -> {
-                    boolean swallow = false;
+                    int mode = LockBarController.TOUCH_PASS;
+                    MotionEvent ev = null;
                     try {
-                        MotionEvent ev = (MotionEvent) chain.getArg(0);
-                        swallow = LockBarController.onWindowTouchPre(
+                        ev = (MotionEvent) chain.getArg(0);
+                        mode = LockBarController.onWindowTouchPre(
                                 chain.getThisObject(), config, ev);
                     } catch (Throwable t) {
                         module.log(5, TAG, "dispatchTouchEvent pre hook failed", t);
                     }
-                    if (swallow) {
+                    if (mode == LockBarController.TOUCH_SWALLOW) {
                         // 这次事件不进系统：子视图一个都收不到，那次上滑解锁就不存在了
                         return Boolean.FALSE;
                     }
-                    Object result = chain.proceed();
+                    Object result;
+                    if (mode == LockBarController.TOUCH_PASS_AS_CANCEL && ev != null) {
+                        // 吞过 MOVE 的手势收尾：把 UP 改写成 CANCEL 再放行。子树此前只收到
+                        // DOWN（没超 slop 的 MOVE），收 UP 会被按事件流判手势的观察者当成
+                        // 单击而误触发；CANCEL 是标准的“手势被收走”，各方都会干净复位
+                        MotionEvent cancel = MotionEvent.obtain(ev);
+                        cancel.setAction(MotionEvent.ACTION_CANCEL);
+                        try {
+                            result = chain.proceed(new Object[]{cancel});
+                        } finally {
+                            cancel.recycle();
+                        }
+                    } else {
+                        result = chain.proceed();
+                    }
                     try {
                         LockBarController.onWindowTouchPost(chain.getThisObject(), config);
                     } catch (Throwable t) {

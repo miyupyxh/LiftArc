@@ -11,7 +11,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.ColorLens
+import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.BrightnessLow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Swipe
 import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material.icons.rounded.Tune
@@ -54,11 +57,14 @@ internal fun ParamsPage(
     var releaseReturn by rememberPrefBool(Prefs.KEY_RELEASE_RETURN, true)
     var haptic by rememberPrefBool(Prefs.KEY_HAPTIC, true)
     var arcEnabled by rememberPrefBool(Prefs.KEY_ARC_ENABLED, true)
+    var arcDim by rememberPrefBool(Prefs.KEY_ARC_DIM, true)
     var interceptSwipe by rememberPrefBool(Prefs.KEY_INTERCEPT_SWIPE, false)
+    var handleWide by rememberPrefBool(Prefs.KEY_HANDLE_WIDE, false)
     var dragRatio by rememberPrefFloat(Prefs.KEY_DRAG_RATIO, 0.85f)
     var handleAlpha by rememberPrefFloat(Prefs.KEY_HANDLE_ALPHA, 1f)
     var arcWidth by rememberPrefFloat(Prefs.KEY_ARC_WIDTH, 3f)
     var arcAlpha by rememberPrefFloat(Prefs.KEY_ARC_ALPHA, 1f)
+    var dimStrength by rememberPrefFloat(Prefs.KEY_DIM_STRENGTH, 0.57f)
     var arcColorValue by rememberPrefInt(Prefs.KEY_ARC_COLOR, 0xFFFFFFFF.toInt())
 
     // 取色器：拖动过程中只改本地状态，关掉对话框时才落盘 + 同步（避免每帧跨进程写）
@@ -113,6 +119,14 @@ internal fun ParamsPage(
                     enabled = enabled,
                     checked = interceptSwipe,
                     onCheckedChange = { interceptSwipe = it },
+                )
+                SwitchPreference(
+                    title = stringResource(R.string.pref_handle_wide),
+                    summary = stringResource(R.string.pref_handle_wide_summary),
+                    startAction = { PrefIcon(Icons.Rounded.SwapHoriz) },
+                    enabled = enabled,
+                    checked = handleWide,
+                    onCheckedChange = { handleWide = it },
                 )
                 ArrowPreference(
                     title = stringResource(R.string.pref_hint_page),
@@ -175,6 +189,24 @@ internal fun ParamsPage(
                     checked = arcEnabled,
                     onCheckedChange = { arcEnabled = it },
                 )
+                SwitchPreference(
+                    title = stringResource(R.string.pref_arc_dim),
+                    summary = stringResource(R.string.pref_arc_dim_summary),
+                    startAction = { PrefIcon(Icons.Rounded.DarkMode) },
+                    enabled = enabled && arcEnabled,
+                    checked = arcDim,
+                    onCheckedChange = { arcDim = it },
+                )
+                SliderPreference(
+                    title = stringResource(R.string.pref_dim_strength),
+                    summary = stringResource(R.string.pref_dim_strength_summary),
+                    startAction = { PrefIcon(Icons.Rounded.BrightnessLow) },
+                    value = dimStrength,
+                    onValueChange = { dimStrength = it },
+                    valueText = "${(dimStrength * 100).toInt()}%",
+                    valueRange = 0.05f..1f,
+                    enabled = enabled && arcEnabled && arcDim,
+                )
                 SliderPreference(
                     title = stringResource(R.string.pref_arc_width),
                     summary = stringResource(R.string.pref_arc_width_summary),
@@ -183,7 +215,8 @@ internal fun ParamsPage(
                     onValueChange = { arcWidth = it },
                     valueText = "${arcWidth.toInt()} dp",
                     valueRange = 1f..10f,
-                    enabled = enabled && arcEnabled,
+                    // 描边宽度只对传统描边有意义；压暗模式填的是整块区域，没有"宽度"
+                    enabled = enabled && arcEnabled && !arcDim,
                 )
                 SliderPreference(
                     title = stringResource(R.string.pref_arc_alpha),
@@ -193,13 +226,15 @@ internal fun ParamsPage(
                     onValueChange = { arcAlpha = it },
                     valueText = "${(arcAlpha * 100).toInt()}%",
                     valueRange = 0.1f..1f,
-                    enabled = enabled && arcEnabled,
+                    // 压暗模式的深浅改由「压暗强度」条单独控制
+                    enabled = enabled && arcEnabled && !arcDim,
                 )
                 ArrowPreference(
                     title = stringResource(R.string.pref_arc_color),
                     summary = stringResource(R.string.pref_arc_color_summary) + " · " + hexOf(arcColorValue),
                     startAction = { PrefIcon(Icons.Rounded.ColorLens) },
-                    enabled = enabled && arcEnabled,
+                    // 压暗模式固定用黑，取色器只对描边有意义
+                    enabled = enabled && arcEnabled && !arcDim,
                     onClick = {
                         pendingArcColor = arcColorValue
                         showArcColor = true

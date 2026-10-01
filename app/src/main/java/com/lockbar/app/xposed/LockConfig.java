@@ -28,12 +28,18 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     private static final String KEY_HANDLE_ALPHA = "handle_alpha";
     private static final String KEY_DRAG_RATIO = "drag_ratio";
     private static final String KEY_ARC_ENABLED = "arc_enabled";
+    /** true = iOS 式压暗（整块压暗靠明暗对比出弧线），false = 传统描边光边。 */
+    private static final String KEY_ARC_DIM = "arc_dim";
+    /** 压暗强度 0..1（只作用于压暗模式），0.57 = 旧版固定 145/255 那档。 */
+    private static final String KEY_DIM_STRENGTH = "dim_strength";
     private static final String KEY_ARC_WIDTH = "arc_width";
     private static final String KEY_ARC_ALPHA = "arc_alpha";
     private static final String KEY_ARC_COLOR = "arc_color";
     private static final String KEY_HAPTIC = "haptic";
     private static final String KEY_RELEASE_RETURN = "release_return";
     private static final String KEY_INTERCEPT_SWIPE = "intercept_swipe";
+    /** 扩大触控范围：触控盒向左右扩展到屏幕两边。 */
+    private static final String KEY_HANDLE_WIDE = "handle_wide";
     private static final String KEY_HINT_TEXT = "hint_text";
     /** 小横条上方文字的样式（独立设置页）。 */
     private static final String KEY_HINT_SIZE = "hint_size";
@@ -138,14 +144,20 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     boolean haptic = true;
     boolean releaseReturn = true;
     boolean arcEnabled = true;
+    /** iOS 式压暗（新默认）；关掉退回只画描边光边。 */
+    boolean arcDim = true;
     /** 拦截系统自己的“上滑解锁”，只让小白条接管上滑。 */
     boolean interceptSwipe;
+    /** 扩大触控范围：触控盒向左右扩展到屏幕两边。 */
+    boolean handleWide;
     /** 小白条上方的自定义文字，空 = 不显示。 */
     String hintText = "";
     float handleAlpha = 1f;
     float dragRatio = 0.85f;
     float arcWidth = 3f;
     float arcAlpha = 1f;
+    /** 压暗强度 0..1（只作用于压暗模式）。 */
+    float dimStrength = 0.57f;
     int arcColor = Color.WHITE;
     /** 小横条上方文字：大小(sp) / 粗细 / 字体索引 / 颜色 / 与条的间距(dp) / 水平偏移(dp)。 */
     float hintSize = 12f;
@@ -204,12 +216,15 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
             haptic = true;
             releaseReturn = true;
             arcEnabled = true;
+            arcDim = true;
             interceptSwipe = false;
+            handleWide = false;
             hintText = "";
             handleAlpha = 1f;
             dragRatio = 0.85f;
             arcWidth = 3f;
             arcAlpha = 1f;
+            dimStrength = 0.57f;
             arcColor = Color.WHITE;
             hintSize = 12f;
             hintWeight = 400;
@@ -230,12 +245,15 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
             haptic = getBool(p, KEY_HAPTIC, true);
             releaseReturn = getBool(p, KEY_RELEASE_RETURN, true);
             arcEnabled = getBool(p, KEY_ARC_ENABLED, true);
+            arcDim = getBool(p, KEY_ARC_DIM, true);
             interceptSwipe = getBool(p, KEY_INTERCEPT_SWIPE, false);
+            handleWide = getBool(p, KEY_HANDLE_WIDE, false);
             hintText = value(getStr(p, KEY_HINT_TEXT, ""));
             handleAlpha = clamp(getFlt(p, KEY_HANDLE_ALPHA, 1f), 0.05f, 1f);
             dragRatio = clamp(getFlt(p, KEY_DRAG_RATIO, 0.85f), 0.2f, 1f);
             arcWidth = clamp(getFlt(p, KEY_ARC_WIDTH, 3f), 0.5f, 20f);
             arcAlpha = clamp(getFlt(p, KEY_ARC_ALPHA, 1f), 0.05f, 1f);
+            dimStrength = clamp(getFlt(p, KEY_DIM_STRENGTH, 0.57f), 0.05f, 1f);
             arcColor = getIn(p, KEY_ARC_COLOR, Color.WHITE);
             hintSize = clamp(getFlt(p, KEY_HINT_SIZE, 12f), 6f, 40f);
             // hint_weight 由 App 侧 rememberPrefInt 写入 → 远端存的是 Integer，

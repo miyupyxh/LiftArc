@@ -32,12 +32,17 @@ public final class Prefs {
     public static final String KEY_HANDLE_ALPHA = "handle_alpha";
     public static final String KEY_DRAG_RATIO = "drag_ratio";
     public static final String KEY_ARC_ENABLED = "arc_enabled";
+    public static final String KEY_ARC_DIM = "arc_dim";
+    /** 压暗强度（只作用于压暗模式）。 */
+    public static final String KEY_DIM_STRENGTH = "dim_strength";
     public static final String KEY_ARC_WIDTH = "arc_width";
     public static final String KEY_ARC_ALPHA = "arc_alpha";
     public static final String KEY_ARC_COLOR = "arc_color";
     public static final String KEY_HAPTIC = "haptic";
     public static final String KEY_RELEASE_RETURN = "release_return";
     public static final String KEY_INTERCEPT_SWIPE = "intercept_swipe";
+    /** 扩大触控范围（向两边扩展）。 */
+    public static final String KEY_HANDLE_WIDE = "handle_wide";
     public static final String KEY_HINT_TEXT = "hint_text";
 
     /** 小横条上方文字的样式（独立设置页）。 */

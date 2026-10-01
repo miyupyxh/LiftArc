@@ -25,11 +25,16 @@ import io.github.libxposed.api.XposedInterface;
  * <p>所有 View 操作都发生在 SystemUI 主线程（hook 的 {@code onAttachedToWindow} /
  * {@code dispatchTouchEvent}、ViewTreeObserver 回调都在线程上），配置变更会先 {@code post} 回主线程。
  *
- * <p>位移与裁切（与 HyperBetter 的 {@code ShadePullGlass} 同一套数学）：
- * 可见底边 {@code edge = height - height * progress * dragRatio}；
- * 「上滑联动」开启时内容整体上移 {@code -height*progress*dragRatio}，裁切壳就是内容自身的
- * bounds + 屏幕圆角，经过 {@code translationY} 后圆角底边正好落在 {@code edge} 上；
- * 关闭时内容不动，裁切壳的底边直接抬到 {@code edge}，只靠裁切露出壁纸。
+ * <p>位移与裁切（几何手法沿用 HyperBetter 的 {@code ShadePullGlass}）：
+ * 拉满进度时内容上移固定为 {@code height * MAX_SHIFT_RATIO}，<b>与跟手参数无关</b> ——
+ * dragRatio 只改行程：{@code 行程 = MAX_SHIFT_RATIO×屏高 / followMul(dragRatio)}，
+ * dragRatio=1 时行程恰好等于位移，手指动多少内容动多少（1:1 完全贴手），
+ * 调小则行程变短、内容按 {@link #followMul} 倍率跑在手指前面；
+ * 拉满行程时位移恒为 MAX_SHIFT_RATIO×屏高，不管 dragRatio 取多小内容都一定滑出屏幕，
+ * 不会卡在半屏；
+ * 可见底边 {@code edge = height - shift}；「上滑联动」开启时内容整体上移 {@code -shift}，
+ * 裁切壳就是内容自身的 bounds + 屏幕圆角，经过 {@code translationY} 后圆角底边正好落在
+ * {@code edge} 上；关闭时内容不动，裁切壳的底边直接抬到 {@code edge}，只靠裁切露出壁纸。
  * 描边则始终按窗口坐标下从 {@code edge - height} 到 {@code edge} 的圆角矩形绘制。
  */
 final class LockBarController implements LockHandleView.Callback, LockConfig.Listener {
@@ -48,8 +53,6 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     private static final float HANDLE_H_PAD_DP = 16f;
     /** 松手时进度达到该值就直接进入系统解锁界面（仿 iOS）。 */
     private static final float UNLOCK_THRESHOLD = 0.5f;
-    /** 拖满进度所需行程占屏高的比例。 */
-    private static final float DRAG_RANGE_RATIO = 0.45f;
     /** 进度到 1 时内容最大上移比例，避免可见区域被裁成 0。 */
     private static final float MAX_SHIFT_RATIO = 0.96f;
 
@@ -59,6 +62,19 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     static final int INTERCEPT_NO = 1;
     /** {@link #onWindowIntercept}：强制拦截（拦掉系统自己的上滑解锁）。 */
     static final int INTERCEPT_YES = 2;
+
+    /** {@link #onWindowTouchPre}：原样放行事件。 */
+    static final int TOUCH_PASS = 0;
+    /** {@link #onWindowTouchPre}：吞掉事件（不交给系统，本次上滑在系统眼里不存在）。 */
+    static final int TOUCH_SWALLOW = 1;
+    /**
+     * {@link #onWindowTouchPre}：放行，但改写成 {@link MotionEvent#ACTION_CANCEL} 再放行。
+     *
+     * <p>只给“吞过 MOVE 的手势”的收尾用：子树收到的是 {@code DOWN → 无 MOVE → UP}，
+     * 任何按事件流判手势的观察者（GestureDetector、可点子 View）都会当成一次单击而误触发；
+     * 改发 {@code ACTION_CANCEL} 就是标准的“手势被收走”语义，观察者与子 View 都干净复位。
+     */
+    static final int TOUCH_PASS_AS_CANCEL = 2;
     /** 时间最多能被上移多少：自身高度的一半（仿 iOS 的“露一半”）。 */
     private static final float LIFT_MAX_RATIO = 0.5f;
     /**
@@ -123,6 +139,14 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     /** 上一次 apply 的进度，用于避免重复写 translationY。 */
     private float lastApplied = Float.NaN;
     private boolean clipInstalled;
+    /**
+     * 壁纸/景深层的原始 translationY（首次反向补偿时记录，复位时还原）。
+     * key=候选 View（身份语义），value=收集时刻它自己的 translationY。
+     */
+    private final java.util.IdentityHashMap<View, Float> anchorBaseY =
+            new java.util.IdentityHashMap<>();
+    /** 本轮手势是否已收集过锚定候选（空结果也要置位，避免每帧重扫整棵树）。 */
+    private boolean anchorCollected;
 
     private float rangePx = 1f;
     private float startProgress;
@@ -139,6 +163,13 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     private boolean downInHandle;
     /** 已经决定要拦掉系统这次上滑。 */
     private boolean blockSystemSwipe;
+    /**
+     * 本次手势是否“归通知所有”——<b>只在 DOWN 判一次，整把不再变</b>；true = 这把手永不拦截。
+     *
+     * <p>以前这个判定挂在每个 MOVE 上重算，列表翻到底的一瞬间判定翻转，拦截在手势<b>中途</b>
+     * 才生效，时间从此跟着手指上下蹿（反馈的“翻动通知时间上下滑动”）。现在按下那一刻定死。
+     */
+    private boolean gestureExempt;
     /** {@link ViewConfiguration#getScaledTouchSlop()}，懒加载。 */
     private int touchSlop;
     /** 本次手势是否已经 dump 过视图树（诊断遮罩用）。 */
@@ -210,15 +241,16 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
      * 所以在这里把事件直接吞掉，系统那条“上滑解锁”就<b>根本不会发生</b> ——
      * 这比在 {@code onInterceptTouchEvent} 里改返回值可靠得多（反馈里“拦截没用”就是卡在那一步）。
      *
-     * @return true = 本次事件不交给系统
+     * @return {@link #TOUCH_PASS} 原样放行；{@link #TOUCH_SWALLOW} 吞掉；
+     *     {@link #TOUCH_PASS_AS_CANCEL} 改写成 {@link MotionEvent#ACTION_CANCEL} 后放行
      */
-    static boolean onWindowTouchPre(Object w, LockConfig config, MotionEvent ev) {
+    static int onWindowTouchPre(Object w, LockConfig config, MotionEvent ev) {
         if (w == null || ev == null) {
-            return false;
+            return TOUCH_PASS;
         }
         LockBarController c = sInstance;
         if (c == null || c.window != w) {
-            return false;
+            return TOUCH_PASS;
         }
         return c.preTouch(ev);
     }
@@ -279,23 +311,30 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
      *   <li>{@code DOWN} 只记落点，永远放行（放行才拿得到后续事件）；</li>
      *   <li>{@code MOVE} 真的成了“从下往上的解锁手势”就从此吞掉，系统那条上滑彻底消失；</li>
      *   <li>吞掉期间同步驱动“时间上移”，到时间高度一半就停住（禁止继续滑动）；</li>
-     *   <li>{@code UP/CANCEL} 放行（让系统的状态标记正常清零），时间做弹性回弹。</li>
+     *   <li>{@code UP/CANCEL} 放行（让系统的状态标记正常清零），时间做弹性回弹。
+     *       但本次手势<b>吞过 MOVE</b> 的话，{@code UP} 改写成 {@code ACTION_CANCEL}
+     *       再放行：子树此前只收到 {@code DOWN} 和没超 slop 的 MOVE，收 {@code UP}
+     *       会被观察事件流的一方（如锁屏歌词模块的 GestureDetector）判成单击而误触发，
+     *       改收 {@code CANCEL} 则是标准的“手势被收走”，各方干净复位；</li>
      * </ul>
+     *
+     * @return {@link #TOUCH_PASS} / {@link #TOUCH_SWALLOW} / {@link #TOUCH_PASS_AS_CANCEL}
      */
-    private boolean preTouch(MotionEvent ev) {
+    private int preTouch(MotionEvent ev) {
         switch (ev.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 downX = ev.getX();
                 downY = ev.getY();
                 downInHandle = inHandleBox(downX, downY);
                 blockSystemSwipe = false;
+                gestureExempt = resolveGestureExempt();
                 // 上一次手势如果还悬着（回弹中途又按下），先把时间放回原位
                 clearLift();
-                return false;
+                return TOUCH_PASS;
 
             case MotionEvent.ACTION_MOVE: {
                 if (downInHandle) {
-                    return false;
+                    return TOUCH_PASS;
                 }
                 // 必须真的是“往上滑”才拦，否则点一下（带点抖动）也会被打断
                 if (!blockSystemSwipe
@@ -310,9 +349,9 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                 }
                 if (blockSystemSwipe) {
                     updateLift(ev.getY());
-                    return true;    // 吞掉：系统这次上滑不存在
+                    return TOUCH_SWALLOW;    // 吞掉：系统这次上滑不存在
                 }
-                return false;
+                return TOUCH_PASS;
             }
 
             case MotionEvent.ACTION_UP:
@@ -321,13 +360,19 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                     liftTracking = false;
                     springLiftBack();
                 }
-                // UP 放过去：面板只收到 DOWN+UP（没超过 slop 的 MOVE 都还给过它），
+                // 本手势吞过 MOVE：按“手势被收走”收尾，把 UP 改写成 CANCEL 放行（见方法注释）。
+                // 否则（普通点击、落在触控区的手势、可滚动区的滑动）UP 原样放过去：
+                // 面板只收到 DOWN+UP（没超过 slop 的 MOVE 都还给过它），
                 // 既不会开始拖动，系统的 touchActive 等状态标记也能正常清零
+                boolean swallowMove = blockSystemSwipe;
                 blockSystemSwipe = false;
-                return false;
+                if (swallowMove && ev.getActionMasked() == MotionEvent.ACTION_UP) {
+                    return TOUCH_PASS_AS_CANCEL;
+                }
+                return TOUCH_PASS;
 
             default:
-                return false;
+                return TOUCH_PASS;
         }
     }
 
@@ -361,8 +406,10 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
      * {@code downInHandle} 单独放行）——反馈要求“把拖动区域放到整个屏幕，盖掉系统的上滑解锁”，
      * 早前的“起点必须在下半屏 / 不能贴左右边”两条划区判断已按要求删除。
      *
-     * <p>唯一保留的例外是手指底下<b>还有能继续翻的通知列表</b>：那种情况下先把通知划完，
-     * 否则锁屏通知就再也滚不动了。
+     * <p>例外只有一条，在 {@code DOWN} 时一次性判死（{@link #resolveGestureExempt()}）：
+     * 落点<b>压在通知行上</b>——那一把手势整个归通知，我们绝不插手（翻动、点击、侧滑删除
+     * 都原样走系统）。空白区 / 时钟区一律拦：真机上那些区域的上滑 NSSL 不消费，
+     * 不拦就漏给系统上滑解锁（v1.0.26 反馈）。
      */
     private boolean shouldBlockSystemSwipe() {
         if (!config.interceptSwipe || sKeyguardState == 0) {
@@ -382,31 +429,81 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         if (handle != null && progress > 0f) {
             return false;   // 我们自己正在拖
         }
-        return !hitsScrollable(downX, downY);
+        return !gestureExempt;
     }
 
     /**
-     * 落点所在的子树里有没有<b>还能继续往下翻</b>的滚动视图。
+     * 本次手势归不归通知所有——<b>只在 {@code DOWN} 判一次，整把手势不再变</b>。
      *
-     * <p>只判断“有没有滚动容器”是不够的：锁屏上 {@code NotificationStackScrollLayout}
-     * 永远铺满屏幕，那样永远返回 true，拦截就成了摆设（反馈“拦截没用”的原因之一）。
-     * 这里进一步问它“到底了没”：
-     * <ul>
-     *   <li>普通滚动容器走 {@link View#canScrollVertically(int)}；</li>
-     *   <li>NSSL 不重写这个方法，改问它自己的 {@code getOwnScrollY() < getScrollRange()}。</li>
-     * </ul>
+     * <p>判定只剩一条：按下点<b>压在通知行上</b>（整树 DFS 找 {@code ExpandableNotificationRow}）
+     * → 这把手势整个归通知，永不拦截。原“底下列表还能翻也不拦”的 {@code hitsScrollable}
+     * 豁免在 v1.0.27 删除：真机上<b>空白区</b>的上滑 NSSL 根本不消费，事件会直接漏给系统
+     * 上滑解锁（1.0.26 实测“空白区域大概率触发系统的上滑”就是它放的行）；而压在通知上时
+     * 列表自己会消费（1.0.26 已验证），行豁免一条就够。
+     *
+     * <p>判定顺序先便宜后贵：小白条手势 / 功能没开 / 确定不在锁屏 / 窗口没量好 / 覆盖层不可见
+     * 都直接判“不拦”（这些情形下 {@link #shouldBlockSystemSwipe()} 本来也过不了）。
      */
-    private boolean hitsScrollable(float x, float y) {
-        View v = topmostAt(window, x, y, overlay);
-        for (View p = v; p != null && p != window; p = parentOf(p)) {
-            String n = p.getClass().getName();
-            if (n.contains("Scroll") || n.contains("Recycler")
-                    || n.contains("ListView") || n.contains("ViewPager")) {
-                return canScrollDown(p);
+    private boolean resolveGestureExempt() {
+        if (downInHandle || !config.interceptSwipe || sKeyguardState == 0) {
+            return true;
+        }
+        if (window == null || window.getWidth() <= 0 || window.getHeight() <= 0) {
+            return true;   // 窗口还没量好：拿不准，宁可不拦
+        }
+        if (overlay == null || overlay.getVisibility() != View.VISIBLE) {
+            return true;   // 覆盖层不可见 = 不在锁屏，本来就拦不了
+        }
+        boolean exempt = onNotificationRow(downX, downY);
+        if (exempt) {
+            // 诊断：走到这里豁免只可能来自“压在通知行上”。空白区若还漏拦，
+            // 这条会给出漏拦落点的 Y%，直接判别是不是行判定误报
+            ModuleLog.d("DOWN@" + Math.round(downY * 100f / Math.max(1, window.getHeight()))
+                    + "%压通知行·不拦");
+            ModuleLog.flush();
+        }
+        return exempt;
+    }
+
+    /**
+     * 落点是不是压在一条通知上——<b>整棵窗口树按边界裁剪 DFS 找</b>，不走 {@link #topmostAt}。
+     *
+     * <p>窗口里在通知之上还摞着一层全屏空壳（消息容器、低亮动画、模糊层、控制中心壳、AOD 壳……）：
+     * 真机分发遇到“不消费”的壳会掉到下面的兄弟，但 {@code topmostAt} 会卡在壳上把链条截断——
+     * 1.0.25 就是这么漏的：链条里既数不到通知行也数不到 NSSL，两个豁免同时落空，
+     * 于是通知手势也被拦、时钟跟着手指上下蹿、通知反而滚不动。
+     * 这里换成带边界裁剪的 DFS：只要有一条<b>可见</b>通知行盖着落点，
+     * 这把手势就归通知，{@link #shouldBlockSystemSwipe()} 永不认领。
+     */
+    private boolean onNotificationRow(float x, float y) {
+        return rowAt(window, x, y, overlay);
+    }
+
+    private static boolean rowAt(ViewGroup root, float x, float y, View skip) {
+        for (int i = root.getChildCount() - 1; i >= 0; i--) {
+            View c = root.getChildAt(i);
+            if (c == skip || c.getVisibility() != View.VISIBLE || c.getAlpha() <= 0f) {
+                continue;
+            }
+            float l = c.getLeft() + c.getTranslationX();
+            float t = c.getTop() + c.getTranslationY();
+            if (x < l || x > l + c.getWidth() || y < t || y > t + c.getHeight()) {
+                continue;   // 边界裁剪：落点不在这棵子树里
+            }
+            if (c.getClass().getName().contains("ExpandableNotificationRow")) {
+                return true;
+            }
+            if (c instanceof ViewGroup && rowAt((ViewGroup) c, x - l, y - t, skip)) {
+                return true;
             }
         }
         return false;
     }
+
+    // v1.0.27：原 hitsScrollable（“底下列表还能翻 → 整把手势不拦”）已删除。真机上空白区的
+    // 上滑 NSSL 并不消费，放行等于直接漏给系统上滑解锁（1.0.26 实测反馈）；压在通知行上时
+    // 列表自己会消费，豁免由 resolveGestureExempt 的“行判定”一条承担。不要再加回来——
+    // §20 否决的是“上滑盖掉通知滚动”，那个意图由行豁免保证，与本方法无关。
 
     /** 这个滚动容器还能不能继续往下滑（手指上划）。拿不准就当“能滑”，宁可不拦。 */
     private static boolean canScrollDown(View v) {
@@ -435,9 +532,16 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         return v.getParent() instanceof View ? (View) v.getParent() : null;
     }
 
-    /** 从窗口根往下找包含 (x, y) 的最上层可见子视图（{@code skip} 是我们自己的覆盖层）。 */
+    /**
+     * 从窗口根往下找落点处“真的会接住事件”的最上层视图（{@code skip} 是我们自己的覆盖层）。
+     *
+     * <p>与 1.0.25 之前的关键区别：<b>子树里没人接、自己也不是可点/滚动的视图时，
+     * 掉到 index 更小的兄弟继续找</b> —— 真机分发里 {@code onTouchEvent} 返回 false 的视图
+     * 就是这样被跨过去的。窗口里摞着的全屏空壳（消息容器、低亮动画、模糊层、
+     * 控制中心壳、AOD 壳……）全靠这条掉过去；旧实现会卡在壳上、把命中链截断，
+     * 两个豁免同时落空 → 通知手势被误拦。
+     */
     private static View topmostAt(ViewGroup root, float x, float y, View skip) {
-        View best = null;
         for (int i = root.getChildCount() - 1; i >= 0; i--) {
             View c = root.getChildAt(i);
             if (c == skip || c.getVisibility() != View.VISIBLE || c.getAlpha() <= 0f) {
@@ -448,16 +552,28 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             if (x < l || x > l + c.getWidth() || y < t || y > t + c.getHeight()) {
                 continue;
             }
-            best = c;
-            break;
+            if (c instanceof ViewGroup) {
+                View deeper = topmostAt((ViewGroup) c, x - l, y - t, skip);
+                if (deeper != null) {
+                    return deeper;
+                }
+            }
+            if (selfHandles(c)) {
+                return c;   // 子树没人接，但它自己会接（可点 / 滚动容器）：就是它
+            }
+            // 不接就当没看见，继续找下面的兄弟
         }
-        if (best instanceof ViewGroup) {
-            View deeper = topmostAt((ViewGroup) best,
-                    x - best.getLeft() - best.getTranslationX(),
-                    y - best.getTop() - best.getTranslationY(), skip);
-            return deeper != null ? deeper : best;
+        return null;
+    }
+
+    /** 这个视图会不会自己消费触摸：可点，或者是（内嵌的）滚动容器。 */
+    private static boolean selfHandles(View v) {
+        if (v.isClickable() || v.isLongClickable() || v.hasOnClickListeners()) {
+            return true;
         }
-        return best;
+        String n = v.getClass().getName();
+        return n.contains("Scroll") || n.contains("Recycler")
+                || n.contains("ListView") || n.contains("ViewPager");
     }
 
     /** {@code KeyguardStateControllerImpl#notifyKeyguardState} 回调。 */
@@ -505,7 +621,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         overlay.setClipToPadding(false);
 
         rim = new LockRimView(ctx);
-        rim.configure(config.arcWidth, config.arcAlpha, config.arcColor);
+        rim.configure(config.arcWidth, config.arcAlpha, config.arcColor, config.arcDim,
+                config.dimStrength);
         overlay.addView(rim, matchParent());
 
         handle = new LockHandleView(ctx);
@@ -513,9 +630,12 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         attachSystemHandle(ctx);
 
         // 触控区 = 小白条周围一大块：条高 5dp、离底 7.5dp，
-        // 触控盒高 36dp（下方 7.5dp、上方 23dp）+ 条宽左右各 16dp
-        int handleWidth = Math.max(1,
-                (int) (handle.systemBarWidth() + 2f * HANDLE_H_PAD_DP * density));
+        // 触控盒高 36dp（下方 7.5dp、上方 23dp）+ 条宽左右各 16dp。
+        // 开了「扩大触控范围」就整条贴满屏宽：条本体由子 View / 自绘居中，外观不变
+        int handleWidth = config.handleWide
+                ? ViewGroup.LayoutParams.MATCH_PARENT
+                : Math.max(1,
+                        (int) (handle.systemBarWidth() + 2f * HANDLE_H_PAD_DP * density));
         FrameLayout.LayoutParams handleLp =
                 new FrameLayout.LayoutParams(handleWidth,
                         Math.max(1, (int) (HANDLE_HEIGHT_DP * density)),
@@ -660,9 +780,201 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                 sb.append('\n');
             }
             config.putDebug(LockConfig.KEY_DEBUG_VIEWS, sb.toString());
+            // 景深分身的证据也走 ModuleLog：debug_views 没有导出入口，debug_log 有
+            scanDepthLayers();
         } catch (Throwable t) {
             log("dumpViews failed", t);
         }
+    }
+
+    /**
+     * 递归扫出可能参与「景深」的 View —— 排查<b>景深分身</b>用（上滑时景深主体被复制一份跟着上移）。
+     *
+     * <p><b>只读不改。</b>分身的可能成因至少有三种：① 主体层在我们移动的容器里（上移一份）
+     * 而下方露出的完整壁纸里本来就有另一份；② 主体层不在我们移动的容器里，与被移动的
+     * 时钟/内容错开；③ 另有模块单独 hook 了壁纸景深（LSPosed 日志里能看到
+     * “Installed third-party wallpaper depth capability hooks”）。三种成因的修法完全不同，
+     * 在拿到真实层级前动手只会改错。
+     *
+     * <p>输出里每行标注它<b>是否落在我们管理的三个 View 子树内</b>（那意味着它同时被平移 + 裁切），
+     * 这一行就是区分上面三种成因的判据。用户在 App 里导出日志即可带回。
+     */
+    private void scanDepthLayers() {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("景深扫描 p=").append(Math.round(progress * 100f))
+                    .append("% parallax=").append(config.parallax)
+                    .append(" managed=keyguard/notif/panel\n");
+            int[] found = {0};
+            walkDepth(window, 0, sb, found);
+            if (found[0] == 0) {
+                sb.append("  (窗口内无 depth/subject/wallpaper 类 View)\n");
+            }
+            // 窗口直属子 View 全量概览：分身到底是「谁在动、谁不动」一眼可辨
+            sb.append("窗口直属子View：\n");
+            for (int i = 0; i < window.getChildCount(); i++) {
+                View c = window.getChildAt(i);
+                if (c == null) {
+                    continue;
+                }
+                sb.append('[').append(i).append("] ")
+                        .append(idName(c)).append('/').append(c.getClass().getSimpleName())
+                        .append(" y=").append(c.getTop()).append("..").append(c.getBottom())
+                        .append(" vis=").append(c.getVisibility())
+                        .append(" a=").append(Math.round(c.getAlpha() * 100f) / 100f)
+                        .append(inManaged(c) ? " [被我们平移]" : " [不动]")
+                        .append('\n');
+            }
+            // 关键容器子层清单：主体层若仍会动，这里能直接点名它挂在谁下面
+            int[] budget = {100};
+            appendLayerDump(sb, "keyguard_panel_view", 1, budget);
+            appendLayerDump(sb, "keyguard_info_layer", 2, budget);
+            appendLayerDump(sb, "miui_keyguard_clock_container", 2, budget);
+            appendLayerDump(sb, "miui_keyguard_foreground_clock_container", 2, budget);
+            ModuleLog.d(sb.toString());
+            ModuleLog.flush();
+        } catch (Throwable t) {
+            log("scanDepthLayers failed", t);
+        }
+    }
+
+    private void walkDepth(View v, int depth, StringBuilder sb, int[] found) {
+        // 三层熔断：深度、命中数、字符数 —— 通知列表展开时这棵树可能非常大
+        if (v == null || depth > 8 || found[0] > 40 || sb.length() > 9000) {
+            return;
+        }
+        String name = idName(v);
+        // 主体层是系统按壁纸元数据（crop_subject_0.png）代码动态建出来的 View，
+        // 未必设了 id —— 只按 id 扫会整个漏掉，所以类名也一起匹配
+        if (isDepthLike(name) || isDepthLike(v.getClass().getSimpleName())) {
+            found[0]++;
+            StringBuilder line = new StringBuilder();
+            for (int i = 0; i < depth; i++) {
+                line.append("  ");
+            }
+            line.append(name)
+                    .append('/').append(v.getClass().getSimpleName())
+                    .append(" y=").append(Math.round(v.getTop() + v.getTranslationY()))
+                    .append("..").append(Math.round(v.getBottom() + v.getTranslationY()))
+                    .append(" ty=").append(Math.round(v.getTranslationY()))
+                    .append(" a=").append(Math.round(v.getAlpha() * 100f) / 100f)
+                    .append(" path=").append(pathOf(v))
+                    .append(inManaged(v) ? "  [被我们平移+裁切]" : "  [不在我们管理的子树内]")
+                    .append('\n');
+            sb.append(line);
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                walkDepth(g.getChildAt(i), depth + 1, sb, found);
+            }
+        }
+    }
+
+    /** 打印某容器的子层树（限深、限行数），用于日志点名主体层挂在谁下面。 */
+    private void appendLayerDump(StringBuilder sb, String rootId, int maxDepth, int[] budget) {
+        if (budget[0] <= 0) {
+            return;
+        }
+        try {
+            View root = find(rootId);
+            if (root == null) {
+                sb.append("子层[").append(rootId).append("] 未找到\n");
+                return;
+            }
+            sb.append("子层[").append(rootId).append("]：\n");
+            dumpLayerChildren(sb, root, 1, maxDepth, budget);
+        } catch (Throwable t) {
+            sb.append("子层[").append(rootId).append("] dump失败 ").append(t).append('\n');
+        }
+    }
+
+    private void dumpLayerChildren(StringBuilder sb, View v, int depth, int maxDepth, int[] budget) {
+        if (budget[0] <= 0 || depth > maxDepth || !(v instanceof ViewGroup)) {
+            return;
+        }
+        ViewGroup g = (ViewGroup) v;
+        int n = Math.min(g.getChildCount(), 15);
+        for (int i = 0; i < n; i++) {
+            if (budget[0] <= 0) {
+                return;
+            }
+            View c = g.getChildAt(i);
+            if (c == null) {
+                continue;
+            }
+            budget[0]--;
+            StringBuilder line = new StringBuilder();
+            for (int d = 0; d < depth; d++) {
+                line.append("  ");
+            }
+            line.append(idName(c)).append('/').append(c.getClass().getSimpleName())
+                    .append(" y=").append(c.getTop()).append("..").append(c.getBottom())
+                    .append(" ty=").append(Math.round(c.getTranslationY()));
+            if (c.getVisibility() != View.VISIBLE) {
+                line.append(" vis=").append(c.getVisibility());
+            }
+            line.append('\n');
+            sb.append(line);
+            dumpLayerChildren(sb, c, depth + 1, maxDepth, budget);
+        }
+        if (g.getChildCount() > n) {
+            budget[0]--;
+            for (int d = 0; d < depth; d++) {
+                sb.append("  ");
+            }
+            sb.append("...(共").append(g.getChildCount()).append("个子View)\n");
+        }
+    }
+
+    /** 该 View 到窗口的祖先链（id 名，{@code >} 分隔），用于日志定位它挂在哪个子树下。 */
+    private String pathOf(View v) {
+        java.util.ArrayList<String> chain = new java.util.ArrayList<>();
+        View c = v;
+        while (c != null && c != window && chain.size() < 12) {
+            chain.add(idName(c));
+            android.view.ViewParent p = c.getParent();
+            c = p instanceof View ? (View) p : null;
+        }
+        java.util.Collections.reverse(chain);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < chain.size(); i++) {
+            if (i > 0) {
+                sb.append('>');
+            }
+            sb.append(chain.get(i));
+        }
+        return sb.toString();
+    }
+
+    private static boolean isDepthLike(String name) {
+        if (name == null || name.isEmpty() || "-".equals(name)) {
+            return false;
+        }
+        String s = name.toLowerCase(java.util.Locale.ROOT);
+        return s.contains("depth") || s.contains("subject") || s.contains("crop")
+                || s.contains("wallpaper") || s.contains("portrait")
+                || s.contains("blur") || s.contains("mask")
+                // 景深主体抠图层 id = deducted_image_view（KeyguardDepthInteractor 维护），
+                // 「deducted」不含上面任何关键词，漏了它分身就修不掉
+                || s.contains("deducted");
+    }
+
+    /** 该 View 是否落在我们平移 + 裁切的三个目标之一的子树内（含自身）。 */
+    private boolean inManaged(View v) {
+        return under(v, keyguardRoot) || under(v, sharedNotif) || under(v, notificationPanel);
+    }
+
+    private static boolean under(View v, View root) {
+        View c = v;
+        while (c != null) {
+            if (c == root) {
+                return true;
+            }
+            android.view.ViewParent p = c.getParent();
+            c = p instanceof View ? (View) p : null;
+        }
+        return false;
     }
 
     private int indexOf(View v) {
@@ -754,7 +1066,10 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         }
 
         int h = window.getHeight();
-        float range = Math.max(h * DRAG_RANGE_RATIO, 1f);
+        // 行程不再固定：拉满位移恒为 h*MAX_SHIFT_RATIO，行程 = 位移 / 跟手倍率。
+        // dragRatio=1 → 倍率 1 → 行程 = 位移，手指动多少内容动多少（1:1 贴手）；
+        // dragRatio 越小行程越短，同样行程内容走得更多 = 更快、但越不贴手。
+        float range = Math.max(h * MAX_SHIFT_RATIO / followMul(config.dragRatio), 1f);
         if (range != rangePx) {
             rangePx = range;
             handle.setRange(rangePx);
@@ -783,6 +1098,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         View box = find("keyguard_bouncer_container");
 
         if (root != keyguardRoot) {
+            restoreAnchors();   // 候选层挂在旧根下，换根前先把补偿还原
             detachTarget(keyguardRoot, clipRoot);
             clipRoot = new LockGlass.Clip();
             keyguardRoot = root;
@@ -790,12 +1106,14 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             clipInstalled = false;
         }
         if (notif != sharedNotif) {
+            restoreAnchors();
             detachTarget(sharedNotif, clipNotif);
             clipNotif = new LockGlass.Clip();
             sharedNotif = notif;
             lastApplied = Float.NaN;
         }
         if (panel != notificationPanel) {
+            restoreAnchors();
             detachTarget(notificationPanel, clipPanel);
             clipPanel = new LockGlass.Clip();
             notificationPanel = panel;
@@ -1029,6 +1347,33 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         } catch (Throwable ignored) {
             // 写诊断失败不影响功能
         }
+        // 同步进可导出的 ModuleLog：拦截那一刻的命中链。反馈“通知被拦”全靠这条定位链条断在哪
+        try {
+            ModuleLog.d(text + " 链=" + chainText(downX, downY));
+            ModuleLog.flush();
+        } catch (Throwable ignored) {
+            // 诊断失败不影响功能
+        }
+    }
+
+    /** 落点往上的命中链（简单类名，最多 10 层；滚动容器标出“还能不能翻”）+ 通知行判定，诊断用。 */
+    private String chainText(float x, float y) {
+        StringBuilder sb = new StringBuilder();
+        int n = 0;
+        for (View p = topmostAt(window, x, y, overlay);
+                p != null && p != window && n < 10; p = parentOf(p), n++) {
+            if (n > 0) {
+                sb.append('>');
+            }
+            String nm = p.getClass().getSimpleName();
+            sb.append(nm);
+            if (nm.contains("Scroll") || nm.contains("Recycler")
+                    || nm.contains("ListView") || nm.contains("ViewPager")) {
+                sb.append('{').append(canScrollDown(p)).append('}');
+            }
+        }
+        sb.append(" 行=").append(onNotificationRow(x, y));
+        return sb.toString();
     }
 
     /** 上次记进日志的诊断状态，用来避免同值反复挂载时刷屏。 */
@@ -1061,10 +1406,12 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         int h = window.getHeight();
         float shift = 0f;
         if (w > 0 && h > 0) {
-            shift = h * g * config.dragRatio;
-            if (shift > h * MAX_SHIFT_RATIO) {
-                shift = h * MAX_SHIFT_RATIO;
-            }
+            // 拉满进度时的位移固定为 MAX_SHIFT_RATIO×屏高，与 dragRatio 无关：
+            // 旧写法 shift = h*g*dragRatio 让 dragRatio 同时决定了「滑出多少」和「跟手快慢」，
+            // 于是 dragRatio 调小时（如 0.3）拉满也只上移 30% 屏高，内容卡在屏幕里出不去。
+            // 行程（rangePx）已按 followMul 缩放，这里对进度保持线性，
+            // d(位移)/d(手指) 恒等于 followMul：dragRatio=1 时恰好 1:1 贴手。
+            shift = h * MAX_SHIFT_RATIO * g;
         }
         // edge = 窗口坐标下的“可见底边”，-shift 时内容整体上移
         float edge = h - shift;
@@ -1072,6 +1419,10 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         setTranslation(keyguardRoot, ty);
         setTranslation(sharedNotif, ty);
         setTranslation(notificationPanel, ty);
+        // 景深/壁纸层反向补偿：这些层画的是壁纸本身（含景深主体），必须留在屏幕原位 ——
+        // 否则前面的主体跟着上滑、后面的系统壁纸不动，就会出现「主体分身」。
+        // 内容根已平移 ty，这里给候选层写 base-ty 抵消（ty=0 时还原并清缓存）。
+        anchorWallpaperLayers(ty);
         // 小白条贴着可见底边一起上升（触控区跟着走，手指不用重新找位置）
         setTranslation(handle, -shift);
         setTranslation(hint, -shift);
@@ -1097,6 +1448,27 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         rim.update(new LockGlass.Shape(edge, radius, radius, LockGlass.smoothstep(g), edge - h));
     }
 
+    /**
+     * 跟手倍率：{@code 内容位移速度 / 手指速度}，由「跟手程度」dragRatio 决定。
+     *
+     * <p>行程（{@link #rangePx}）= {@code MAX_SHIFT_RATIO×屏高 / followMul}，
+     * 而 {@link #apply} 里位移对进度线性 —— 两者相除，速度比恒等于本函数：
+     *
+     * <ul>
+     *   <li>dragRatio = 1 → 倍率 1：内容与手指 1:1 完全贴手，手指停内容停；
+     *   <li>dragRatio &lt; 1 → 倍率 &gt; 1：行程变短，内容按该倍率跑在手指前面。
+     * </ul>
+     *
+     * <p>倍率恒大于等于 1：手指从底部条出发最多划一屏，行程一旦超过屏高就永远拉不满，
+     * 所以「更跟手」只能朝 1:1 收敛，低档位只能是「短行程 + 更快」，这是物理上限。
+     * 拉满行程时位移恒为 {@link #MAX_SHIFT_RATIO}×屏高 —— 内容一定滑出屏幕，
+     * 不管 dragRatio 取多小都不会卡在半屏（旧实现 dragRatio=0.3 只能上移 30% 屏高）。
+     */
+    private static float followMul(float dragRatio) {
+        float r = Math.max(0.2f, Math.min(1f, dragRatio));
+        return 1f + 2f * (1f - r);
+    }
+
     private void clearClips() {
         if (clipInstalled) {
             clipRoot.clear(keyguardRoot);
@@ -1115,6 +1487,82 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         if (v != null && v.getTranslationY() != y) {
             v.setTranslationY(y);
         }
+    }
+
+    // ---------------------------------------------------------- 壁纸层锚定（景深防分身）
+
+    /**
+     * 把「画壁纸本身」的层（壁纸预览 / 景深主体合成层）钉在屏幕原位。
+     *
+     * <p>父容器（keyguard_root_view 等）已被平移 {@code ty}，子层会跟着走 —— 但屏幕后面还有
+     * 一份不动的系统壁纸，主体跟着上滑就会和后层的那份错开，形成「分身」。
+     * 这里给每个候选写 {@code base - ty} 抵消父位移：壁纸层全程留在原位，
+     * 与后层完全重合，上滑时只被弧形裁切逐步切走，视觉上就是一张完整壁纸。
+     *
+     * <p>候选 = 管理子树内 id/类名命中 depth|subject|crop|wallpaper|portrait|blur|mask 的 View
+     * （与 {@link #scanDepthLayers} 同一套判定），只收集最上层命中者，整棵子树一起锚定，
+     * 避免父子叠加补偿。
+     *
+     * <p>{@code ty == 0}（复位 / 联动关）时还原原始 translationY 并清缓存，下一轮手势重新收集 ——
+     * 系统在空闲期改过 translationY 也不会被我们固化。
+     */
+    private void anchorWallpaperLayers(float ty) {
+        try {
+            if (ty == 0f) {
+                restoreAnchors();
+                return;
+            }
+            if (!anchorCollected) {
+                collectAnchor(keyguardRoot);
+                collectAnchor(sharedNotif);
+                collectAnchor(notificationPanel);
+                anchorCollected = true;   // 空结果也置位：非景深壁纸不该每帧重扫整棵树
+            }
+            for (java.util.Map.Entry<View, Float> e : anchorBaseY.entrySet()) {
+                setTranslation(e.getKey(), e.getValue() - ty);
+            }
+        } catch (Throwable t) {
+            log("anchorWallpaperLayers failed", t);
+        }
+    }
+
+    /** 还原所有锚定候选的原始 translationY 并清缓存（视图换根 / 复位时也要走这里）。 */
+    private void restoreAnchors() {
+        if (!anchorCollected) {
+            return;
+        }
+        for (java.util.Map.Entry<View, Float> e : anchorBaseY.entrySet()) {
+            setTranslation(e.getKey(), e.getValue());
+        }
+        anchorBaseY.clear();
+        anchorCollected = false;
+    }
+
+    private void collectAnchor(View root) {
+        if (root == null) {
+            return;
+        }
+        if (isAnchorLayer(root)) {
+            anchorBaseY.put(root, root.getTranslationY());
+            return;   // 最上层命中者：整棵子树一起留在原位，不再下钻
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) root;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                collectAnchor(g.getChildAt(i));
+            }
+        }
+    }
+
+    private boolean isAnchorLayer(View v) {
+        String id = idName(v);
+        // blur_blend_container 长在 miui_keyguard_clock_container / foreground 两个时钟容器里，
+        // 是表盘/数字的合成层 —— 1.0.20 实测把它钉住 = 锁屏时钟不再跟随上移。
+        // 它属于要跟内容一起上移的「界面」，不属于壁纸层，明确排除（诊断仍会打印它，ty=0 即未锚定）
+        if ("blur_blend_container".equals(id)) {
+            return false;
+        }
+        return isDepthLike(id) || isDepthLike(v.getClass().getSimpleName());
     }
 
     private void reset() {
@@ -1363,8 +1811,9 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     public void onConfigChanged(LockConfig c) {
         // 远端配置的回调可能不在主线程
         window.post(() -> {
+            updateHandleWidth();
             if (rim != null) {
-                rim.configure(c.arcWidth, c.arcAlpha, c.arcColor);
+                rim.configure(c.arcWidth, c.arcAlpha, c.arcColor, c.arcDim, c.dimStrength);
             }
             updateHint();
             fadeHandle(progress);
@@ -1377,6 +1826,28 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                 reset();
             }
         });
+    }
+
+    /**
+     * 「扩大触控范围」开关切换后重排小白条触控盒宽度。
+     *
+     * <p>宽度只是命中区：条本体在子 View / 自绘里都按屏幕居中，全宽也不改变外观。
+     */
+    private void updateHandleWidth() {
+        if (handle == null) {
+            return;
+        }
+        int want = config.handleWide
+                ? ViewGroup.LayoutParams.MATCH_PARENT
+                : Math.max(1,
+                        (int) (handle.systemBarWidth()
+                                + 2f * HANDLE_H_PAD_DP
+                                * window.getResources().getDisplayMetrics().density));
+        ViewGroup.LayoutParams lp = handle.getLayoutParams();
+        if (lp != null && lp.width != want) {
+            lp.width = want;
+            handle.setLayoutParams(lp);
+        }
     }
 
     private void log(String msg, Throwable t) {

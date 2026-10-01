@@ -14,8 +14,8 @@ android {
         applicationId = "com.lockbar.app"
         minSdk = 33
         targetSdk = 35
-        versionCode = 118
-        versionName = "1.0.18"
+        versionCode = 119
+        versionName = "1.0.19"
     }
 
     // 应用本身只有中文，去掉各大库带的几十种语言翻译
