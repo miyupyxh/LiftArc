@@ -90,7 +90,7 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
      *
      * <p>见 {@link #putDebug}：远端配置对 hook 进程是只读的，这条走不通。
      */
-    private static final String DIAG_AUTHORITY = "com.lockbar.app.diag";
+    private static final String DIAG_AUTHORITY = "io.github.miyupyxh.liftarc.diag";
     private static final String DIAG_EXTRA_VALUE = "value";
 
     /**

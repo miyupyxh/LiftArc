@@ -86,7 +86,7 @@ class DiagProvider : ContentProvider() {
 
     companion object {
         /** 与 AndroidManifest 里的 `android:authorities` 必须一致。 */
-        const val AUTHORITY = "com.lockbar.app.diag"
+        const val AUTHORITY = "io.github.miyupyxh.liftarc.diag"
 
         const val EXTRA_VALUE = "value"
 

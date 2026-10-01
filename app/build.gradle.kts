@@ -11,7 +11,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.lockbar.app"
+        applicationId = "io.github.miyupyxh.liftarc"
         minSdk = 33
         targetSdk = 35
         versionCode = 119

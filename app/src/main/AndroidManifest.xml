@@ -31,7 +31,7 @@
         -->
         <provider
             android:name=".DiagProvider"
-            android:authorities="com.lockbar.app.diag"
+            android:authorities="io.github.miyupyxh.liftarc.diag"
             android:exported="true" />
     </application>
 
