@@ -130,6 +130,18 @@ final class ModuleLog {
     }
 
     /**
+     * 「一键清空」：App 侧清完展示副本后，把进程内的环形缓冲也清掉。
+     *
+     * <p>不主动 {@link #flush()} —— 空缓冲 {@code flush} 本来就会早退，展示副本由 App 自己
+     * 清；不清这里的话下一次 {@code flush} 会把老行原样灌回去，清空就白点了。
+     */
+    static void clear() {
+        synchronized (LINES) {
+            LINES.clear();
+        }
+    }
+
+    /**
      * 把缓冲整体回传给 App。
      *
      * <p>只在内容变化时才真正落盘（{@link LockConfig#putDebug} 自带比对），所以多调几次没有开销。

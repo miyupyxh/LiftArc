@@ -42,6 +42,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.lockbar.app.Prefs
 import com.lockbar.app.R
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -247,6 +248,21 @@ internal fun LogScreen(onBack: () -> Unit) {
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            // 一键清空：两头都清才算数 —— 本地展示副本立刻删掉；
+                            // 远端 log_clear 时间戳经 sync 推给 hook，把 SystemUI 进程内的
+                            // 环形缓冲也清掉（不清的话下一次 flush 会把老日志原样灌回来）
+                            Prefs.debug(context).edit().remove(Prefs.KEY_DEBUG_LOG).apply()
+                            Prefs.putLong(Prefs.KEY_LOG_CLEAR, System.currentTimeMillis())
+                            sync()
+                        },
+                        enabled = log.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(text = stringResource(R.string.log_clear))
+                    }
                 }
             }
 

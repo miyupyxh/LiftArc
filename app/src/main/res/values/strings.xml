@@ -71,9 +71,9 @@
     <string name="pref_arc_enabled">启用弧形描边</string>
     <string name="pref_arc_enabled_summary">按屏幕圆角绘制弧形光边</string>
     <string name="pref_arc_dim">iOS 式压暗</string>
-    <string name="pref_arc_dim_summary">上升的锁屏整块压暗，下方露出正常壁纸，靠明暗对比自然显出那条弧线，不画描边。关掉则回到只画一条光边</string>
+    <string name="pref_arc_dim_summary">上滑时只压暗弧线以下露出的区域，上部锁屏内容保持原样，靠明暗对比自然显出那条弧线，不画描边。关掉则回到只画一条光边</string>
     <string name="pref_dim_strength">压暗强度</string>
-    <string name="pref_dim_strength_summary" formatted="false">上滑时整块压暗的深浅：越大越黑（默认 57% 为原效果），100% 纯黑、调低更通透；仅压暗模式生效</string>
+    <string name="pref_dim_strength_summary" formatted="false">上滑时下部压暗的深浅：越大越黑（默认 57%），100% 纯黑、调低更通透；强度固定，不随上滑幅度递增；仅压暗模式生效</string>
     <string name="pref_arc_width">描边宽度</string>
     <string name="pref_arc_width_summary">光边的粗细</string>
     <string name="pref_arc_alpha">描边不透明度</string>
@@ -215,5 +215,6 @@
     <string name="log_exported">已保存</string>
     <string name="log_export_failed">导出失败</string>
     <string name="log_export_hint">导出为 txt 存入「下载」，并自动弹出分享面板</string>
+    <string name="log_clear">清空日志</string>
     <string name="log_empty">还没有日志。\n\n请依次确认：\n1. LSPosed 中已启用本模块\n2. 作用域勾选了「系统界面」(com.android.systemui)\n3. 重启系统界面或重启手机\n\n三项都确认过仍为空，请到 LSPosed 的日志页查看。</string>
 </resources>

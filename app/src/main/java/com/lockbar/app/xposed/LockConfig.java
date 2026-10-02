@@ -28,9 +28,9 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     private static final String KEY_HANDLE_ALPHA = "handle_alpha";
     private static final String KEY_DRAG_RATIO = "drag_ratio";
     private static final String KEY_ARC_ENABLED = "arc_enabled";
-    /** true = iOS 式压暗（整块压暗靠明暗对比出弧线），false = 传统描边光边。 */
+    /** true = iOS 式压暗（压弧线以下露出的区域，靠明暗对比出弧线），false = 传统描边光边。 */
     private static final String KEY_ARC_DIM = "arc_dim";
-    /** 压暗强度 0..1（只作用于压暗模式），0.57 = 旧版固定 145/255 那档。 */
+    /** 压暗强度 0..1（固定值，不随上滑进度递增；只作用于压暗模式），0.57 = 旧版固定 145/255 那档。 */
     private static final String KEY_DIM_STRENGTH = "dim_strength";
     private static final String KEY_ARC_WIDTH = "arc_width";
     private static final String KEY_ARC_ALPHA = "arc_alpha";
@@ -61,6 +61,18 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
      * 都是 Long，否则就是 v1.0.15 那种 {@code ClassCastException} 的翻版。
      */
     private static final String KEY_SAFETY_EXIT = "safety_exit";
+
+    /**
+     * 一键清空模块日志（App 写时间戳 → hook 清 {@link ModuleLog} 环形缓冲）。
+     *
+     * <p>与 {@link #KEY_SAFETY_EXIT} 完全同款的反向通道：远端配置 App 能写、hook 能读，
+     * {@link #onSharedPreferenceChanged} 值一变就叫醒，不用轮询。展示副本（{@code debug_log}）
+     * 由 App 侧自己删，这边只负责进程内缓冲 —— 两头都清才算一键清空。
+     *
+     * <p><b>类型红线</b>：App 侧 {@code Prefs.putLong}，这里不读值（事件即指令），但
+     * {@code syncToFramework} 的 Long 分支要求两侧类型一致，故仍约定 Long。
+     */
+    private static final String KEY_LOG_CLEAR = "log_clear";
 
     /** 文字颜色默认值：与旧版本保持一致。 */
     static final int DEFAULT_HINT_COLOR = 0xD9FFFFFF;
@@ -156,7 +168,7 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     float dragRatio = 0.85f;
     float arcWidth = 3f;
     float arcAlpha = 1f;
-    /** 压暗强度 0..1（只作用于压暗模式）。 */
+    /** 压暗强度 0..1（固定值直接套用，不随进度递增；只作用于压暗模式）。 */
     float dimStrength = 0.57f;
     int arcColor = Color.WHITE;
     /** 小横条上方文字：大小(sp) / 粗细 / 字体索引 / 颜色 / 与条的间距(dp) / 水平偏移(dp)。 */
@@ -405,6 +417,10 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
         if (key != null && key.startsWith("debug_")) {
             return;   // 诊断信息是我们自己写回去的，不是配置
+        }
+        if (KEY_LOG_CLEAR.equals(key)) {
+            // 一键清空：App 已删展示副本，这里清进程内缓冲（不清则下次 flush 又灌回去）
+            ModuleLog.clear();
         }
         reload();
         Listener l = listener;

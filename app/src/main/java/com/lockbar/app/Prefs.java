@@ -64,6 +64,15 @@ public final class Prefs {
      */
     public static final String KEY_SAFETY_EXIT = "safety_exit";
 
+    /**
+     * 一键清空模块日志（App 写时间戳 → hook 清环形缓冲）。
+     *
+     * <p>与 {@link #KEY_SAFETY_EXIT} 同款「App 能写、hook 能读」的远端配置反向通道；
+     * 展示副本由 App 直接删 {@link #DIAG_GROUP} 里的 {@link #KEY_DEBUG_LOG}。
+     * 类型红线：Long（走 {@link #syncToFramework} 的 Long 分支 → hook 侧 getLng）。
+     */
+    public static final String KEY_LOG_CLEAR = "log_clear";
+
     /** SystemUI 写回来的诊断信息（不是配置，不要 syncToFramework 冲掉）。 */
     public static final String KEY_DEBUG_STATUS = "debug_status";
     public static final String KEY_DEBUG_VIEWS = "debug_views";

@@ -1445,6 +1445,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         clipInstalled = true;
 
         // 描边壳：顶边与内容顶对齐，底边落在可见底边上
+        // rimAlpha=smoothstep 只给传统描边淡入用；1.0.20 起压暗分支不再读它（固定强度）
         rim.update(new LockGlass.Shape(edge, radius, radius, LockGlass.smoothstep(g), edge - h));
     }
 

@@ -215,7 +215,7 @@ internal fun ParamsPage(
                     onValueChange = { arcWidth = it },
                     valueText = "${arcWidth.toInt()} dp",
                     valueRange = 1f..10f,
-                    // 描边宽度只对传统描边有意义；压暗模式填的是整块区域，没有"宽度"
+                    // 描边宽度只对传统描边有意义；压暗模式压的是弧线以下区域，没有"宽度"
                     enabled = enabled && arcEnabled && !arcDim,
                 )
                 SliderPreference(
