@@ -38,6 +38,7 @@ import com.lockbar.app.R
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 
@@ -65,6 +66,7 @@ internal fun ParamsPage(
     var arcWidth by rememberPrefFloat(Prefs.KEY_ARC_WIDTH, 3f)
     var arcAlpha by rememberPrefFloat(Prefs.KEY_ARC_ALPHA, 1f)
     var dimStrength by rememberPrefFloat(Prefs.KEY_DIM_STRENGTH, 0.57f)
+    var dimUpper by rememberPrefBool(Prefs.KEY_DIM_UPPER, false)
     var arcColorValue by rememberPrefInt(Prefs.KEY_ARC_COLOR, 0xFFFFFFFF.toInt())
 
     // 取色器：拖动过程中只改本地状态，关掉对话框时才落盘 + 同步（避免每帧跨进程写）
@@ -196,6 +198,43 @@ internal fun ParamsPage(
                     enabled = enabled && arcEnabled,
                     checked = arcDim,
                     onCheckedChange = { arcDim = it },
+                )
+                @Composable
+                fun CenteredDropdownPreference(
+                    title: String,
+                    items: List<String>,
+                    selectedIndex: Int,
+                    onSelectedIndexChange: (Int) -> Unit,
+                    modifier: Modifier = Modifier,
+                    startAction: @Composable (() -> Unit)? = null,
+                    enabled: Boolean = true,
+                ) {
+                    var expanded by remember { mutableStateOf(false) }
+
+                    OverlayDropdownPreference(
+                        title = title,
+                        // summary 传 null 而不是空字符串，触发无 summary 布局
+                        summary = null,
+                        startAction = startAction,
+                        items = items,
+                        selectedIndex = selectedIndex,
+                        onSelectedIndexChange = {
+                            onSelectedIndexChange(it)
+                            expanded = false
+                        },
+                        enabled = enabled,
+                    )
+                }
+                CenteredDropdownPreference(
+                    title = stringResource(R.string.pref_dim_side),
+                    items = listOf(
+                        stringResource(R.string.pref_dim_side_upper),
+                        stringResource(R.string.pref_dim_side_lower),
+                    ),
+                    selectedIndex = if (dimUpper) 0 else 1,
+                    onSelectedIndexChange = { dimUpper = it == 0 },
+                    startAction = { PrefIcon(Icons.Rounded.SwapHoriz) },
+                    enabled = enabled && arcEnabled && arcDim,
                 )
                 SliderPreference(
                     title = stringResource(R.string.pref_dim_strength),

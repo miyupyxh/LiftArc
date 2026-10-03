@@ -622,7 +622,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
         rim = new LockRimView(ctx);
         rim.configure(config.arcWidth, config.arcAlpha, config.arcColor, config.arcDim,
-                config.dimStrength);
+                config.dimStrength, config.dimUpper);
         overlay.addView(rim, matchParent());
 
         handle = new LockHandleView(ctx);
@@ -1814,7 +1814,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         window.post(() -> {
             updateHandleWidth();
             if (rim != null) {
-                rim.configure(c.arcWidth, c.arcAlpha, c.arcColor, c.arcDim, c.dimStrength);
+                rim.configure(c.arcWidth, c.arcAlpha, c.arcColor, c.arcDim, c.dimStrength,
+                        c.dimUpper);
             }
             updateHint();
             fadeHandle(progress);

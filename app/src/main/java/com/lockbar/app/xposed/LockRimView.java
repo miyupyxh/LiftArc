@@ -10,9 +10,12 @@ import android.view.View;
  * 沿锁屏可见底边绘制边缘效果的覆盖层，两种风格由配置切换：
  *
  * <ul>
- *   <li><b>iOS 式压暗（{@link #dim}，新默认）</b>：只压弧线<b>以下</b>露出的区域（屏幕下部），
- *       上部锁屏内容保持原样；压暗值 = {@link #dimStrength} 固定强度，不随上滑进度递增。
- *       靠「自然内容 vs 压暗的下部」的明暗对比显出那条弧线，<b>不画任何描边</b>。</li>
+ *   <li><b>iOS 式压暗（{@link #dim}，新默认）</b>：沿弧线切两半，压哪一半由
+ *       {@link #dimUpper} 决定（设置页是二选一）—— 默认选<b>下半部分</b>：压弧线
+ *       <b>以下</b>露出的区域，上部锁屏内容保持原样，强度 = {@link #dimStrength}
+ *       固定值不随进度递增；选<b>上半部分</b>则压弧线<b>以上</b>的锁屏内容，下部露出的
+ *       壁纸保持原样，强度 = 同一个 {@link #dimStrength} × {@code smoothstep(上滑进度)}，
+ *       逐级加深到设定值。两种都靠明暗对比显出弧线，<b>不画任何描边</b>。</li>
  *   <li><b>传统描边</b>：只沿底边画一段光边（左下圆角 → 底边 → 右下圆角）。</li>
  * </ul>
  *
@@ -40,6 +43,8 @@ final class LockRimView extends View {
     private int tintColor = 0xFFFFFFFF;
     /** true = iOS 式压暗；false = 传统描边。 */
     private boolean dim = true;
+    /** 压暗哪一半：false = 弧线下方（默认），true = 弧线上方的锁屏内容。 */
+    private boolean dimUpper;
 
     LockRimView(Context context) {
         super(context);
@@ -48,17 +53,19 @@ final class LockRimView extends View {
     }
 
     void configure(float strokeWidthDp, float rimAlpha, int tintColor, boolean dim,
-                   float dimStrength) {
+                   float dimStrength, boolean dimUpper) {
         boolean changed = this.strokeWidthDp != strokeWidthDp
                 || this.rimAlpha != rimAlpha
                 || this.tintColor != tintColor
                 || this.dim != dim
-                || this.dimStrength != dimStrength;
+                || this.dimStrength != dimStrength
+                || this.dimUpper != dimUpper;
         this.strokeWidthDp = strokeWidthDp;
         this.rimAlpha = rimAlpha;
         this.tintColor = tintColor;
         this.dim = dim;
         this.dimStrength = dimStrength;
+        this.dimUpper = dimUpper;
         if (changed) {
             invalidate();
         }
@@ -103,25 +110,46 @@ final class LockRimView extends View {
             return;
         }
         if (dim) {
-            // iOS 式压暗（1.0.20 反转）：只压弧线以下露出的区域（屏幕下部），
-            // 上部锁屏内容完全不动 —— 旧版整块面板压暗 + smoothstep(g) 递增已废，
-            // 那样上部内容跟着变黑、越滑越黑，与 iOS 的「上部不变、下部压暗」相反。
-            // 深浅 = dimStrength 固定值，手势一到就到满，不随进度变（不要逐级递增）。
+            // iOS 式压暗（1.0.20 起）：分界线永远是那条弧线 —— 上方是锁屏内容、
+            // 下方是露出的壁纸，靠「自然 vs 压暗」的明暗对比显出弧线，不画任何描边。
+            // dimUpper 决定压哪一半（设置页二选一）：
+            //   下半部分（默认）= 压弧线下方露出的区域，深浅 = dimStrength 固定值，
+            //                     手势一到就到满，不随进度递增；
+            //   上半部分        = 压弧线上方的锁屏内容，起手那一帧弧线还在屏幕底边、
+            //                     「上方」≈ 整块屏幕，故逐级加深（0 → dimStrength），
+            //                     越滑越深，既不会一碰全屏变黑，也不是一次压到位。
             // 压暗固定用黑：arcColor 是给描边用的（默认月白），拿它来压会变成提亮。
             int vh = getHeight();
             if (dimStrength <= 0.01f || vh <= 0) {
                 return;
             }
-            // 面板壳与裁切同一条 Path；露出区 = 整个窗口减去面板壳
-            // （底边圆角外侧那两个小角也归压暗 —— 弧线就从这条分界线上来）。
+            // 面板壳与裁切同一条 Path（底边圆角外侧那两个小角归压暗一侧 —— 弧线就是分界线）
             LockGlass.path(path, w, shape);
-            revealPath.reset();
-            revealPath.addRect(0f, 0f, w, vh, Path.Direction.CW);
-            revealPath.op(path, Path.Op.DIFFERENCE);
             rimPaint.setStyle(Paint.Style.FILL);
             rimPaint.setStrokeWidth(0f);
-            rimPaint.setColor(argb((int) (255f * dimStrength), 0, 0, 0));
-            canvas.drawPath(revealPath, rimPaint);
+            Path target;
+            float strength = dimStrength;
+            if (dimUpper) {
+                // 逐级压暗：深浅 = 压暗强度 × smoothstep(上滑进度)，越滑越深、到设定值封顶，
+                // 全程跟随「压暗强度」滑条缩放 —— 起手时 rise≈0 深浅也≈0，不会一碰就全屏变黑。
+                // 进度取「内容已上移的屏高比例」rise（0 = 还没动，1 = 已整块滑出屏幕），
+                // 不取 rimAlpha（= smoothstep(g)）：g 的行程是 MAX_SHIFT_RATIO×屏高，
+                // 用 g 的话内容都滑出屏了深浅才到三成，看着像没生效。
+                // smoothstep 自带 clamp，rise > 1 时稳定停在设定值。
+                float rise = (vh - shape.visibleHeight) / vh;
+                strength *= LockGlass.smoothstep(rise);
+                if (255f * strength < 1f) {
+                    return;
+                }
+                target = path;
+            } else {
+                revealPath.reset();
+                revealPath.addRect(0f, 0f, w, vh, Path.Direction.CW);
+                revealPath.op(path, Path.Op.DIFFERENCE);
+                target = revealPath;
+            }
+            rimPaint.setColor(argb((int) (255f * strength), 0, 0, 0));
+            canvas.drawPath(target, rimPaint);
             return;
         }
 

@@ -71,9 +71,14 @@
     <string name="pref_arc_enabled">启用弧形描边</string>
     <string name="pref_arc_enabled_summary">按屏幕圆角绘制弧形光边</string>
     <string name="pref_arc_dim">iOS 式压暗</string>
-    <string name="pref_arc_dim_summary">上滑时只压暗弧线以下露出的区域，上部锁屏内容保持原样，靠明暗对比自然显出那条弧线，不画描边。关掉则回到只画一条光边</string>
+    <string name="pref_arc_dim_summary">上滑时不画描边，改用明暗对比自然显出那条弧线</string>
+    <string name="pref_dim_side">压暗位置</string>
+    <!-- 「压暗位置」不配副文本：miuix BasicComponent 在 summary 为 null 时，只有标题一行，
+         会在 56dp 行高内把标题垂直居中（这正是想要的效果）。别给它加 summary，加了标题就会被顶上去。 -->
+    <string name="pref_dim_side_upper">上半部分</string>
+    <string name="pref_dim_side_lower">下半部分</string>
     <string name="pref_dim_strength">压暗强度</string>
-    <string name="pref_dim_strength_summary" formatted="false">上滑时下部压暗的深浅：越大越黑（默认 57%），100% 纯黑、调低更通透；强度固定，不随上滑幅度递增；仅压暗模式生效</string>
+    <string name="pref_dim_strength_summary" formatted="false">上滑时压暗区域的深浅：越大越黑（默认 57%），100% 纯黑、调低更通透；仅压暗模式生效</string>
     <string name="pref_arc_width">描边宽度</string>
     <string name="pref_arc_width_summary">光边的粗细</string>
     <string name="pref_arc_alpha">描边不透明度</string>

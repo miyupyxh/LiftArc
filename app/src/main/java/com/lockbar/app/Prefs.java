@@ -35,6 +35,8 @@ public final class Prefs {
     public static final String KEY_ARC_DIM = "arc_dim";
     /** 压暗强度（只作用于压暗模式）。 */
     public static final String KEY_DIM_STRENGTH = "dim_strength";
+    /** 压暗哪一半：false = 弧线下方（默认）、true = 弧线上方的锁屏内容。 */
+    public static final String KEY_DIM_UPPER = "dim_upper";
     public static final String KEY_ARC_WIDTH = "arc_width";
     public static final String KEY_ARC_ALPHA = "arc_alpha";
     public static final String KEY_ARC_COLOR = "arc_color";

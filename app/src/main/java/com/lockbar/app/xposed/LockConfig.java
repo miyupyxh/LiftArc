@@ -32,6 +32,8 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     private static final String KEY_ARC_DIM = "arc_dim";
     /** 压暗强度 0..1（固定值，不随上滑进度递增；只作用于压暗模式），0.57 = 旧版固定 145/255 那档。 */
     private static final String KEY_DIM_STRENGTH = "dim_strength";
+    /** 压暗哪一半：false = 弧线下方（默认）、true = 弧线上方的锁屏内容。 */
+    private static final String KEY_DIM_UPPER = "dim_upper";
     private static final String KEY_ARC_WIDTH = "arc_width";
     private static final String KEY_ARC_ALPHA = "arc_alpha";
     private static final String KEY_ARC_COLOR = "arc_color";
@@ -170,6 +172,8 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     float arcAlpha = 1f;
     /** 压暗强度 0..1（固定值直接套用，不随进度递增；只作用于压暗模式）。 */
     float dimStrength = 0.57f;
+    /** 压暗哪一半：false = 弧线下方露出的区域（默认），true = 弧线上方的锁屏内容。 */
+    boolean dimUpper;
     int arcColor = Color.WHITE;
     /** 小横条上方文字：大小(sp) / 粗细 / 字体索引 / 颜色 / 与条的间距(dp) / 水平偏移(dp)。 */
     float hintSize = 12f;
@@ -237,6 +241,7 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
             arcWidth = 3f;
             arcAlpha = 1f;
             dimStrength = 0.57f;
+            dimUpper = false;
             arcColor = Color.WHITE;
             hintSize = 12f;
             hintWeight = 400;
@@ -266,6 +271,7 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
             arcWidth = clamp(getFlt(p, KEY_ARC_WIDTH, 3f), 0.5f, 20f);
             arcAlpha = clamp(getFlt(p, KEY_ARC_ALPHA, 1f), 0.05f, 1f);
             dimStrength = clamp(getFlt(p, KEY_DIM_STRENGTH, 0.57f), 0.05f, 1f);
+            dimUpper = getBool(p, KEY_DIM_UPPER, false);
             arcColor = getIn(p, KEY_ARC_COLOR, Color.WHITE);
             hintSize = clamp(getFlt(p, KEY_HINT_SIZE, 12f), 6f, 40f);
             // hint_weight 由 App 侧 rememberPrefInt 写入 → 远端存的是 Integer，
