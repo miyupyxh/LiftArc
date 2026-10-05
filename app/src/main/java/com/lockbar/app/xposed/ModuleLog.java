@@ -39,9 +39,9 @@ final class ModuleLog {
     private static final String TAG = "LockBar";
 
     /** 环形缓冲行数上限，防止长时间运行把远端配置撑爆。 */
-    private static final int MAX_LINES = 300;
+    private static final int MAX_LINES = 900;
     /** 单条远端字符串的长度上限（留足余量，SP 单值不宜过大）。 */
-    private static final int MAX_CHARS = 12000;
+    private static final int MAX_CHARS = 36000;
 
     private static final ArrayDeque<String> LINES = new ArrayDeque<>();
     private static final SimpleDateFormat FMT =

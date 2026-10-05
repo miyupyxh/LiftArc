@@ -3,6 +3,8 @@ package com.lockbar.app.xposed;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.Resources;
+import android.graphics.RenderEffect;
+import android.graphics.Shader;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.util.TypedValue;
@@ -44,6 +46,14 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
     /** 松手回弹时长（与 HyperBetter 的 smoothstep 回弹一致）。 */
     private static final long RETURN_MS = 240L;
+    /**
+     * 解锁兜底检查的宽限：动画<b>结束后</b>再等这么久，才回头看内容有没有被接管。
+     *
+     * <p>必须是「时长 + 宽限」而不是一个固定值 —— 时长现在是可调的（150..800ms，
+     * 来自 {@code config.unlockMs}），兜底若写死 700ms，用户把时长拉到 800 就会在
+     * 条还在飞的半路上把它拽回去，那一下反而比不做兜底还难看。
+     */
+    private static final long UNLOCK_GRACE_MS = 400L;
     /**
      * 小白条触控区高度（dp）。条本体只有 5dp、离底 7.5dp，
      * 触控区给到 36dp：条下方 7.5dp、上方 23dp、左右各 16dp，远超“条周围 5dp”。
@@ -97,6 +107,12 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
     /** 锁屏状态：-1 未知（还没收到回调），0 不在锁屏，1 在锁屏且未被遮挡。 */
     private static int sKeyguardState = -1;
+    /**
+     * 控制中心是否展开中：true = 控制中心开着，整套上滑系统让路 —— 拦截不再吞事件、
+     * 小白条这次按下不消费（1.0.22 反馈：开着控制中心时上滑被模块劫持）。
+     * 两条 hook 路径汇到这里（见 {@link #onControlCenterOpen}），volatile 供触线程读。
+     */
+    private static volatile boolean sControlCenterOpen;
     /** {@link #resolve()} 的重试上限，避免 id 不存在时每次布局都全树查找。 */
     private static final int MAX_RESOLVE_TRY = 5;
     /** {@link #resolveClock()} 的重试上限（时间容器可能比锁屏其它部分晚出现）。 */
@@ -121,6 +137,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
     private FrameLayout overlay;
     private LockRimView rim;
+    /** 液态玻璃描边条（设置项「液态玻璃实时渲染弧形描边」，1.0.22）。 */
+    private LockGlassStrip strip;
     private LockHandleView handle;
     /** 小白条上方的自定义文字（配置 hint_text 为空时不显示）。 */
     private TextView hint;
@@ -138,6 +156,10 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     private float progress;
     /** 上一次 apply 的进度，用于避免重复写 translationY。 */
     private float lastApplied = Float.NaN;
+    /** 背景模糊：上次写进 view 的半径（px）；-1 = 当前没挂效果。半径没变就不重建 effect。 */
+    private int lastBlurRadius = -1;
+    /** 全屏壁纸盖层：铺在 window 最底层（index 0），盖住系统壁纸窗口那张真正垫底的壁纸。 */
+    private WallCoverView cover;
     private boolean clipInstalled;
     /**
      * 壁纸/景深层的原始 translationY（首次反向补偿时记录，复位时还原）。
@@ -154,6 +176,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
     private float radiusCache;
     private ValueAnimator animator;
+    /** 解锁那一下的延时兜底；非空 = 有一道还没跑的检查，见 {@link #armUnlockGuard()}。 */
+    private Runnable unlockGuard;
 
     // ---------------------------------------------------------------- 触摸拦截
     /** 本次手势的落点（窗口坐标）。 */
@@ -406,13 +430,19 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
      * {@code downInHandle} 单独放行）——反馈要求“把拖动区域放到整个屏幕，盖掉系统的上滑解锁”，
      * 早前的“起点必须在下半屏 / 不能贴左右边”两条划区判断已按要求删除。
      *
-     * <p>例外只有一条，在 {@code DOWN} 时一次性判死（{@link #resolveGestureExempt()}）：
-     * 落点<b>压在通知行上</b>——那一把手势整个归通知，我们绝不插手（翻动、点击、侧滑删除
-     * 都原样走系统）。空白区 / 时钟区一律拦：真机上那些区域的上滑 NSSL 不消费，
-     * 不拦就漏给系统上滑解锁（v1.0.26 反馈）。
+     * <p>例外两条：① 落点<b>压在通知行上</b>——那一把手势整个归通知，我们绝不插手
+     * （翻动、点击、侧滑删除都原样走系统），这条在 {@code DOWN} 时一次性判死
+     * （{@link #resolveGestureExempt()}）；② <b>控制中心展开中</b>——锁屏上的上滑归系统
+     * （开合控制中心），拦截与小白条整套让路（1.0.22 反馈：开着控制中心时上滑被模块劫持，
+     * 关不掉控制中心、底部上滑还误触发解锁）。空白区 / 时钟区一律拦：真机上那些区域的上滑
+     * NSSL 不消费，不拦就漏给系统上滑解锁（v1.0.26 反馈）。
      */
     private boolean shouldBlockSystemSwipe() {
         if (!config.interceptSwipe || sKeyguardState == 0) {
+            return false;
+        }
+        // 控制中心开着：这条上滑归系统（用户要开合控制中心），我们整套让路
+        if (sControlCenterOpen) {
             return false;
         }
         // 覆盖层可见 = 「在锁屏上 + 没弹密码盘 + 模块启用 + 屏幕亮着」，
@@ -435,17 +465,19 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     /**
      * 本次手势归不归通知所有——<b>只在 {@code DOWN} 判一次，整把手势不再变</b>。
      *
-     * <p>判定只剩一条：按下点<b>压在通知行上</b>（整树 DFS 找 {@code ExpandableNotificationRow}）
+     * <p>判定两条，都是「这把手势不归我们」：① <b>控制中心展开中</b>——系统的开合手势优先，
+     * 一步 DFS 都不用走（1.0.22 反馈：开着控制中心时上滑被模块吞掉，关不掉也往上推不动）；
+     * ② 按下点<b>压在通知行上</b>（整树 DFS 找 {@code ExpandableNotificationRow}）
      * → 这把手势整个归通知，永不拦截。原“底下列表还能翻也不拦”的 {@code hitsScrollable}
      * 豁免在 v1.0.27 删除：真机上<b>空白区</b>的上滑 NSSL 根本不消费，事件会直接漏给系统
      * 上滑解锁（1.0.26 实测“空白区域大概率触发系统的上滑”就是它放的行）；而压在通知上时
      * 列表自己会消费（1.0.26 已验证），行豁免一条就够。
      *
-     * <p>判定顺序先便宜后贵：小白条手势 / 功能没开 / 确定不在锁屏 / 窗口没量好 / 覆盖层不可见
-     * 都直接判“不拦”（这些情形下 {@link #shouldBlockSystemSwipe()} 本来也过不了）。
+     * <p>判定顺序先便宜后贵：小白条手势 / 功能没开 / 确定不在锁屏 / 控制中心展开 / 窗口没量好
+     * / 覆盖层不可见都直接判“不拦”（这些情形下 {@link #shouldBlockSystemSwipe()} 本来也过不了）。
      */
     private boolean resolveGestureExempt() {
-        if (downInHandle || !config.interceptSwipe || sKeyguardState == 0) {
+        if (downInHandle || !config.interceptSwipe || sKeyguardState == 0 || sControlCenterOpen) {
             return true;
         }
         if (window == null || window.getWidth() <= 0 || window.getHeight() <= 0) {
@@ -590,6 +622,25 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         }
     }
 
+    /**
+     * 控制中心展开状态回调 —— 两条 hook 路径都打到这里（keyguard 侧
+     * {@code onExpandChanged(boolean)}、container 委托 {@code onVisibleChanged(boolean)}），
+     * 谁先响谁算，互为兜底。值没变不记日志，稳态零开销。
+     */
+    static void onControlCenterOpen(boolean open) {
+        if (sControlCenterOpen == open) {
+            return;
+        }
+        sControlCenterOpen = open;
+        ModuleLog.d(open ? "控制中心展开·上滑手势让路" : "控制中心收起·拦截恢复");
+        ModuleLog.flush();
+    }
+
+    /** 控制中心开着时给 {@link LockHandleView} 用：小白条这次按下直接不消费。 */
+    static boolean controlCenterOpen() {
+        return sControlCenterOpen;
+    }
+
     private static LockBarController obtain(Object w, LockConfig config, XposedInterface module) {
         if (!(w instanceof ViewGroup)) {
             return null;
@@ -624,6 +675,21 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         rim.configure(config.arcWidth, config.arcAlpha, config.arcColor, config.arcDim,
                 config.dimStrength, config.dimUpper);
         overlay.addView(rim, matchParent());
+
+        // 玻璃条压在描边/压暗之上（玻璃是材质，不该被一层黑纱盖掉），但在小白条之下（触控优先）。
+        // 黑纱在玻璃下面 = 带外的壁纸已经变暗、带内取的却是原图，所以 shader 里要按
+        // 同一条弧线把压暗同步补上（setRim 后两项），否则玻璃与压暗背景之间是硬割裂。
+        strip = new LockGlassStrip(ctx);
+        // 描边参数必须与上面 rim.configure 的五项同源：画在哪 / 多宽 / 要不要画 / 压哪半 / 压多深
+        strip.setRim(config.arcWidth, config.arcAlpha, config.arcDim,
+                config.dimStrength, config.dimUpper);
+        strip.setGlassThickness(config.glassThick);
+        // 「玻璃参数」页的九项：**必须排在 setGlassEnabled 之前** —— 否则开关一开
+        // 就先 rebuild 了一次，用的还是字段初值，紧接着又 rebuild 一次才拿到真值。
+        // 字段初值恰好等于默认配置，所以两次结果一样，但顺序写死更省心。
+        applyGlassTuning(strip, config);
+        strip.setGlassEnabled(config.glassLive);
+        overlay.addView(strip, matchParent());
 
         handle = new LockHandleView(ctx);
         handle.setCallback(this);
@@ -663,6 +729,11 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                 new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT);
         window.addView(overlay, windowLp);
+
+        if (config.blurEnabled) {
+            // 壁纸盖层预热：位图加载是异步的，等起滑那一刻才开始就来不及（第一次上滑会没糊）
+            strip.ensureWallpaperForBlur();
+        }
 
         try {
             window.getViewTreeObserver().addOnGlobalLayoutListener(layoutListener);
@@ -1019,6 +1090,10 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         if (overlay == null) {
             return;
         }
+        if (config.blurEnabled && strip != null) {
+            // 后开模糊的用户：锁屏一出现就补预热（方法内有节流），起滑那次才有位图可盖
+            strip.ensureWallpaperForBlur();
+        }
         if (!config.isReady() && configLoadTry < MAX_CONFIG_TRY) {
             // LSPosed 远端配置偶尔要等一会儿才拿得到，失败就限次重试
             configLoadTry++;
@@ -1097,6 +1172,9 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         View panel = find("notification_panel");
         View box = find("keyguard_bouncer_container");
 
+        if (root != keyguardRoot || notif != sharedNotif || panel != notificationPanel) {
+            restoreBlurAll();   // 旧根上的模糊是我们挂的，换人前先把系统原件还回去
+        }
         if (root != keyguardRoot) {
             restoreAnchors();   // 候选层挂在旧根下，换根前先把补偿还原
             detachTarget(keyguardRoot, clipRoot);
@@ -1396,6 +1474,98 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
     // ------------------------------------------------------------------ 每帧应用
 
+    /** 模糊满强度对应的半径（dp）：20dp 在 3x 屏上约 60px，糊到看不清细节但渐变还在。 */
+    private static final float BLUR_MAX_DP = 20f;
+
+    /**
+     * 上滑模糊**只糊弧线以下露出的那半边背景**（arcui7 拍板「只糊下面」）：
+     * 可见壁纸长在**系统壁纸窗口**里、在我们窗口树外，RenderEffect 够不着
+     * （无景深时树内也没有任何背景层）—— 盖一张同套 center-crop 的壁纸位图到
+     * window 最底层，对盖层挂效果，等于把盖层画到的那半边糊掉；哪半边由
+     * {@link WallCoverView#setShell} 逐帧喂的同源弧线裁出，与压暗分界线重合，
+     * 弧线以上不画、透出真实壁纸保持清晰。景深主体/前景抠图浮在上层，按拍板
+     * 保持清晰，时钟/通知同样清晰；给树内景深层挂效果的老路已整体拆除。
+     * 半径 = 模糊程度 × 进度 × 20dp 连续渐强，不做分级阶梯；取整后没变就不重建 effect，
+     * 稳态滑动不产生分配。
+     */
+    private void applySwipeBlur(float g) {
+        if (!config.blurEnabled || config.blurStrength <= 0f) {
+            if (lastBlurRadius != -1) {
+                restoreBlurAll();
+            }
+            return;
+        }
+        float density = window.getResources().getDisplayMetrics().density;
+        int r = Math.round(config.blurStrength * Math.min(g, 1f) * BLUR_MAX_DP * density);
+        if (g <= 0.001f) {
+            r = 0;
+        }
+        if (r == lastBlurRadius) {
+            return;
+        }
+        if (r <= 0) {
+            restoreBlurAll();
+            return;
+        }
+        try {
+            RenderEffect effect = RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP);
+            ensureCover();
+            if (cover != null) {
+                cover.setRenderEffect(effect);
+            }
+            lastBlurRadius = r;
+        } catch (Throwable t) {
+            log("applySwipeBlur failed", t);
+        }
+    }
+
+    /**
+     * 挂上/续上壁纸盖层：位图取自玻璃条那份解码（同一份源、同一套 center-crop，
+     * 低半径阶段与真实壁纸逐像素对齐）；加载是异步的，本帧拿不到就先不挂，半径
+     * 下一次变化时自动补上。盖层只在弧线的糊侧画位图，分界由 apply() 里 setShell
+     * 逐帧喂；拿不到静态壁纸（超级/视频壁纸）就不挂 —— 宁可这一轮不糊，
+     * 也绝不拿固定截图冒充实时背景。
+     */
+    private void ensureCover() {
+        if (window == null || strip == null) {
+            return;
+        }
+        strip.ensureWallpaperForBlur();   // 自带 4s 轮询 + 20s 重试窗，加载中/已就绪都是空转
+        if (cover == null) {
+            android.graphics.Bitmap b = strip.wallpaperBitmap();
+            if (b == null) {
+                return;
+            }
+            cover = new WallCoverView(window.getContext());
+            cover.setBitmap(b);
+            window.addView(cover, 0, matchParent());
+            return;
+        }
+        // 换过壁纸就跟上（同对象时 setBitmap 直接返回，稳态零开销）
+        android.graphics.Bitmap cur = strip.wallpaperBitmap();
+        if (cur != null) {
+            cover.setBitmap(cur);
+        }
+    }
+
+    /**
+     * 收起模糊：把盖层撤出窗口、半径缓存归 -1（下次起滑重挂）。上层（时钟/通知/景深主体）
+     * 从头到尾都没被碰过、一律清晰，无需处理；系统自己的模糊（下拉玻璃、通知栏过渡）
+     * 是逐帧重挂的，同样不受影响。
+     */
+    private void restoreBlurAll() {
+        if (cover != null) {
+            try {
+                cover.setRenderEffect(null);
+                window.removeView(cover);
+            } catch (Throwable ignored) {
+                // 已经不在树上（容器换代时被 resolve 收过）
+            }
+            cover = null;
+        }
+        lastBlurRadius = -1;
+    }
+
     private void apply(float g) {
         if (g == lastApplied) {
             return;
@@ -1426,8 +1596,10 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         // 小白条贴着可见底边一起上升（触控区跟着走，手指不用重新找位置）
         setTranslation(handle, -shift);
         setTranslation(hint, -shift);
+        // 背景模糊与位移同一节拍：半径没变时这行是空操作（稳态滑动零分配）
+        applySwipeBlur(g);
 
-        if (!config.arcEnabled || g <= 0.001f || w <= 0 || h <= 0) {
+        if (g <= 0.001f || w <= 0 || h <= 0) {
             clearClips();
             return;
         }
@@ -1439,14 +1611,42 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         float localTop = (edge - h) - ty;
         LockGlass.Shape clipShape =
                 new LockGlass.Shape(localBottom, radius, radius, 1f, localTop);
-        clipRoot.update(keyguardRoot, clipShape);
-        clipNotif.update(sharedNotif, clipShape);
-        clipPanel.update(notificationPanel, clipShape);
-        clipInstalled = true;
+        // 窗口坐标系的弧线壳：rim 压暗、盖层模糊分界、玻璃条三处共用同一份，
+        // 每帧只建一个；字段是不可变快照语义（要变就 copy()），谁都不原地改它。
+        LockGlass.Shape arcShape =
+                new LockGlass.Shape(edge, radius, radius, LockGlass.smoothstep(g), edge - h);
+        // 「启用弧形描边」只管这一段：裁切 + 描边/压暗。玻璃条是「玻璃参数」页那套独立
+        // 效果，由 glassLive 自己开关，关掉描边照样跟手 —— 原先这句 return 连着玻璃一起
+        // 端走（clearClips() 里 rim.clear() 还捎带 strip.clear()），描边一关玻璃也没了。
+        if (config.arcEnabled) {
+            clipRoot.update(keyguardRoot, clipShape);
+            clipNotif.update(sharedNotif, clipShape);
+            clipPanel.update(notificationPanel, clipShape);
+            clipInstalled = true;
 
-        // 描边壳：顶边与内容顶对齐，底边落在可见底边上
-        // rimAlpha=smoothstep 只给传统描边淡入用；1.0.20 起压暗分支不再读它（固定强度）
-        rim.update(new LockGlass.Shape(edge, radius, radius, LockGlass.smoothstep(g), edge - h));
+            // 描边壳：顶边与内容顶对齐，底边落在可见底边上
+            // rimAlpha=smoothstep 只给传统描边淡入用；1.0.20 起压暗分支不再读它（固定强度）
+            rim.update(arcShape);
+        } else {
+            // 收掉裁切与描边壳，**但不动玻璃条**：这里只能调 clearArcClips()，
+            // clearClips() 会连 strip 一起收。两者的 clear() 都幂等，每帧走一次没开销。
+            clearArcClips();
+        }
+        // 盖层的模糊分界与压暗/裁切同一条弧（arcui7 拍板「只糊下面」）：喂壳过去，
+        // 盖层只在糊的那半画位图 —— 弧线以上透出真实壁纸、一个像素不盖。
+        // 描边关了也要喂：模糊归 blur_enabled 自己管，跟描边开关互相独立（同玻璃条）。
+        if (cover != null) {
+            cover.setShell(arcShape, config.dimUpper);
+        }
+        // 玻璃条用的是同一条弧线（同一份 Shape），逐帧跟手，不另起任何动画。
+        // rimAlpha（= smoothstep(g)）照旧传下去，但 1.0.22 起它**不再控制玻璃强度**：
+        // 强度在 rebuild() 里恒等于「玻璃参数」页的不透明度，手势第一帧就是满的。
+        // rimAlpha 只剩两个用途 —— 驱动 shader 的 phase（液态扰动 / 跑动高光）、
+        // 以及 rim 自己的描边淡入。所以这里「描边还没显影、玻璃已经满强度」是**故意的**，
+        // 就是用户要的那句：不要跟随上滑程度再慢慢添加玻璃效果。
+        if (strip != null) {
+            strip.update(arcShape);
+        }
     }
 
     /**
@@ -1470,7 +1670,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         return 1f + 2f * (1f - r);
     }
 
-    private void clearClips() {
+    /** 只收「弧形描边」这一套（裁切 + 描边壳）。玻璃条归 glassLive 管，这里不碰它。 */
+    private void clearArcClips() {
         if (clipInstalled) {
             clipRoot.clear(keyguardRoot);
             clipNotif.clear(sharedNotif);
@@ -1479,6 +1680,14 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         }
         if (rim != null) {
             rim.clear();
+        }
+    }
+
+    /** 整套全收（手势归零 / 尺寸无效）：裁切 + 描边壳 + 玻璃条的外壳一起。 */
+    private void clearClips() {
+        clearArcClips();
+        if (rim != null && strip != null) {
+            strip.clear();
         }
     }
 
@@ -1568,6 +1777,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
     private void reset() {
         cancelAnimator();
+        clearUnlockGuard();
         clearLift();
         progress = 0f;
         startProgress = 0f;
@@ -1615,6 +1825,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     @Override
     public void onDragStart(float y) {
         cancelAnimator();
+        clearUnlockGuard();
         startProgress = progress;
         lastTickBucket = bucket(progress);
         viewsDumped = false;
@@ -1651,15 +1862,18 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     }
 
     @Override
-    public void onDragEnd(float dy, float ignored, boolean cancel) {
+    public void onDragEnd(float dy, float ignored, float velocityUpPx, boolean cancel) {
         if (!config.enabled || overlay == null
                 || overlay.getVisibility() != View.VISIBLE) {
             reset();
             return;
         }
-        // 拉过半松手：直接交给系统进解锁界面（仿 iOS），不回弹
-        if (!cancel && progress >= UNLOCK_THRESHOLD && LockBarUnlock.show()) {
-            animateTo(0f);
+        // 拉过半松手进解锁；第二条路是「速度解锁」—— 100% 跟手时行程 = 0.96×屏高
+        // （约 2400px），光靠进度得划掉近半屏，慢拖累、甩一下反而拖不快；甩一下就够了。
+        // 顺序是**先让条飞到顶、再拉解锁界面**：以前是 show() 和 animateTo(0f) 同时发，
+        // 密码盘往上冒、条往下掉，两股反方向撞在一起就是那股简陋劲。
+        if (!cancel && (progress >= UNLOCK_THRESHOLD || flickByVelocity(velocityUpPx))) {
+            animateUpThenUnlock();
             return;
         }
         // cancel 也包含了“点击小白条没有拖动”的情况：点击视为归位
@@ -1668,6 +1882,26 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             return;
         }
         fadeHandle(progress);
+    }
+
+    /**
+     * 速度解锁：松手瞬间手指向上速度 ≥ 「触发速度」就判定解锁，与进度无关。
+     *
+     * <p>阈值来自设置页（dp/s），这里乘 density 换成 px/s 再比 ——
+     * {@link LockHandleView} 给的本来就是原始屏幕像素上的速度。
+     *
+     * <p>方向天然受限：只收<b>向上</b>的速度，向下甩得到的是负数，永远够不到正阈值；
+     * 开关关掉这条就彻底退化成纯进度判定，行为与 1.0.21 逐帧一致。
+     *
+     * <p>不会截胡慢拖：滑条下限 300 dp/s 已经明显快于手动，慢拖松手时的瞬时速度
+     * 远在它之下，照旧得划到 {@link #UNLOCK_THRESHOLD} 才解锁。
+     */
+    private boolean flickByVelocity(float velocityUpPx) {
+        if (!config.flickUnlock || config.flickVelocity <= 0f || window == null) {
+            return false;
+        }
+        float density = window.getResources().getDisplayMetrics().density;
+        return velocityUpPx >= config.flickVelocity * density;
     }
 
     private static int bucket(float p) {
@@ -1806,7 +2040,127 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         }
     }
 
+    /**
+     * 触发解锁的那一下：先把条和内容顺着上滑的劲送到屏幕顶，<b>送到位了才</b>拉解锁界面。
+     *
+     * <p>1.0.21 及以前是「松手立刻 {@code LockBarUnlock.show()} + 同时 animateTo(0f)」，
+     * 于是密码盘往上冒的同时条正在往下掉，两股反方向的运动撞在一起 —— 那就是看着简陋的
+     * 全部原因。仿 iOS 应该是：条继续往上飞出屏幕，屏幕空一下，解锁界面才进来。
+     *
+     * <p>送到位后停在 {@code progress = 1}（内容上移 0.96×屏高，条和弧线都到顶）<b>不回弹</b>：
+     * 解锁界面接管时 {@link #sync()} 会在下一次全局布局里把覆盖层置 GONE 并归零 ——
+     * bouncer 显隐、keyguard 状态变化都会走那条 {@code OnGlobalLayoutListener}。
+     * 只有 show() 明确失败才退回原来的回弹；另有一道延时兜底 {@link #armUnlockGuard()}。
+     *
+     * <p>被 {@link #cancelAnimator()} 取消（用户又按下、或 {@link #reset()}）时绝不能去拉
+     * 解锁界面 —— ValueAnimator 被取消同样会回调 onAnimationEnd，所以先记 cancelled。
+     */
+    private void animateUpThenUnlock() {
+        cancelAnimator();
+        float from = progress;
+        if (from >= 1f) {
+            // 手指已经拉到顶了，没有东西可飞，直接进解锁
+            finishUnlock();
+            return;
+        }
+        ValueAnimator a = ValueAnimator.ofFloat(from, 1f);
+        a.setDuration(Math.round(config.unlockMs));
+        a.setInterpolator(SMOOTHSTEP);
+        a.addUpdateListener(animation -> {
+            progress = (Float) animation.getAnimatedValue();
+            apply(progress);
+            fadeHandle(progress);
+            // 条是飞出去的、不是停在顶上：在 fadeHandle 那 50% 的基础上再乘 (1-p)，
+            // 到顶刚好淡干净。这段只在解锁这一下跑，正常拖动不经过这里。
+            if (handle != null) {
+                handle.setAlpha(handle.getAlpha() * (1f - progress));
+            }
+            if (hint != null && hint.getVisibility() == View.VISIBLE) {
+                hint.setAlpha(hint.getAlpha() * (1f - progress));
+            }
+        });
+        a.addListener(new android.animation.AnimatorListenerAdapter() {
+            private boolean cancelled;
+
+            @Override
+            public void onAnimationCancel(android.animation.Animator animation) {
+                cancelled = true;
+            }
+
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                if (cancelled) {
+                    return;
+                }
+                if (animator == a) {
+                    animator = null;
+                }
+                finishUnlock();
+            }
+        });
+        animator = a;
+        a.start();
+    }
+
+    /** 条送到顶之后再拉解锁界面；起不来就按 1.0.21 的回弹处理。 */
+    private void finishUnlock() {
+        // 进度停在 1 时盖层正全糊着 —— 解锁一启动先撤掉，绝不能把糊住的壁纸盖到桌面上；
+        // 这几帧 keyguard 还盖在上面，背景短暂回清晰无碍。回弹路径（show 失败）随
+        // apply(<1) 自动重挂。
+        restoreBlurAll();
+        if (LockBarUnlock.show()) {
+            armUnlockGuard();
+            return;
+        }
+        animateTo(0f);
+    }
+
+    /**
+     * 解锁那一下的延时兜底。
+     *
+     * <p>正常路径用不到它：bouncer 一显隐、keyguard 状态一变都会走 onGlobalLayout →
+     * {@link #sync()}，覆盖层随即 GONE 并归零，本兜底那时看到 progress 已经是 0、空转结束。
+     * 但 {@code showPrimaryBouncer} 那条老路返回的是「结果未知」，真没弹出来时没有任何回调
+     * 来收尾，内容就会一直卡在顶上 —— 这里 700ms 后看一眼，还在顶上就当没解锁、收回去。
+     */
+    private void armUnlockGuard() {
+        clearUnlockGuard();
+        Runnable r = () -> {
+            unlockGuard = null;
+            if (progress >= 1f) {
+                animateTo(0f);
+            }
+        };
+        unlockGuard = r;
+        window.postDelayed(r, Math.round(config.unlockMs) + UNLOCK_GRACE_MS);
+    }
+
+    /** 下一次手势 / 归位时把那道兜底撤掉，免得它跟手指抢 progress。 */
+    private void clearUnlockGuard() {
+        Runnable r = unlockGuard;
+        if (r != null) {
+            unlockGuard = null;
+            window.removeCallbacks(r);
+        }
+    }
+
     // ------------------------------------------------------------------ 配置变更
+
+    /**
+     * 把「玻璃参数」页那九项下发给玻璃条。
+     *
+     * <p>抽成方法是为了让初始化和 {@link #onConfigChanged} 两个调用点共用<b>同一行</b>：
+     * 九个实参手抄两遍，早晚有一处顺序会串位 —— 那种 bug 表现为「改折射却变了高光」，
+     * 肉眼根本分不清是顺序错了还是效果本来就这样。
+     *
+     * <p>实参顺序与 {@code LockConfig} 字段声明顺序、{@code setGlassTuning} 形参顺序一致，
+     * 三处锁死在同一条注释链上。
+     */
+    private void applyGlassTuning(LockGlassStrip s, LockConfig c) {
+        s.setGlassTuning(c.glassDiffuse, c.glassBlur, c.glassRefract, c.glassEdgeRef,
+                c.glassRefractW, c.glassFresnel, c.glassHighlight, c.glassHlWidth,
+                c.glassOpacity);
+    }
 
     @Override
     public void onConfigChanged(LockConfig c) {
@@ -1816,6 +2170,13 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             if (rim != null) {
                 rim.configure(c.arcWidth, c.arcAlpha, c.arcColor, c.arcDim, c.dimStrength,
                         c.dimUpper);
+            }
+            if (strip != null) {
+                // 与上面 rim.configure 同源的五项：宽度 / 不透明度 / 是否压暗 / 压哪半 / 压多深
+                strip.setRim(c.arcWidth, c.arcAlpha, c.arcDim, c.dimStrength, c.dimUpper);
+                strip.setGlassThickness(c.glassThick);
+                applyGlassTuning(strip, c);
+                strip.setGlassEnabled(c.glassLive);
             }
             updateHint();
             fadeHandle(progress);

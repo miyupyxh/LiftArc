@@ -27,6 +27,7 @@ import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.FormatQuote
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Tag
 import androidx.compose.runtime.Composable
@@ -35,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -53,6 +55,9 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+/** 本模块自己的仓库：关于页「访问该项目」直接跳这里。 */
+private const val PROJECT_URL = "https://github.com/miyupyxh/LiftArc"
+
 /**
  * 关于页：Logo + 应用名 + 版本（参考 KernelSU 设置-关于），下面一个 MiuiX 框放作者信息。
  */
@@ -61,6 +66,7 @@ internal fun AboutScreen(onBack: () -> Unit, onOpenCredits: () -> Unit) {
     val scrollBehavior = MiuixScrollBehavior()
     val colorScheme = MiuixTheme.colorScheme
     val textStyles = MiuixTheme.textStyles
+    val uriHandler = LocalUriHandler.current
 
     Scaffold(
         topBar = {
@@ -170,7 +176,20 @@ internal fun AboutScreen(onBack: () -> Unit, onOpenCredits: () -> Unit) {
                 }
             }
 
-            // 单独一张卡片：这是个「按钮」，不是只读信息，所以和上面的信息卡分开
+            // 下面两张单独的卡片都是「按钮」，不是只读信息，所以和上面的信息卡分开：
+            // 上一张先去本项目的 GitHub 仓库，再下面一张进引用与致谢
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    AboutNavRow(
+                        icon = Icons.Rounded.Public,
+                        title = stringResource(R.string.about_project),
+                        summary = stringResource(R.string.about_project_summary),
+                        // 手机上没装浏览器 / 链接失效都不该让页面崩掉
+                        onClick = { runCatching { uriHandler.openUri(PROJECT_URL) } },
+                    )
+                }
+            }
+
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     AboutNavRow(

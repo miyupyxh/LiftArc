@@ -32,8 +32,8 @@ class ThemeStore(context: Context) {
     var mode by mutableStateOf(sp.getInt(KEY_MODE, MODE_SYSTEM))
         private set
 
-    /** 动态取色（Monet）。 */
-    var dynamic by mutableStateOf(sp.getBoolean(KEY_DYNAMIC, true))
+    /** 动态取色（Monet）。默认关 —— 初次打开不该自动变色（1.0.22 反馈），要开由用户自己开。 */
+    var dynamic by mutableStateOf(sp.getBoolean(KEY_DYNAMIC, false))
         private set
 
     /** 关键色 ARGB，0 = 用系统壁纸取色。 */

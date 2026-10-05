@@ -25,7 +25,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -75,7 +77,7 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
-import top.yukonga.miuix.kmp.basic.ColorPicker
+import top.yukonga.miuix.kmp.basic.ColorPalette
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -97,7 +99,6 @@ import top.yukonga.miuix.kmp.nav.core.rememberNavSystemCornerRadius
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
-import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -125,6 +126,9 @@ private const val ROUTE_THEME = "theme"
 private const val ROUTE_ABOUT = "about"
 private const val ROUTE_LOG = "log"
 
+/** 「玻璃参数」页：实时液态玻璃的九个旋钮 + 玻璃厚度（1.0.22）。 */
+private const val ROUTE_GLASS = "glass"
+
 /** 二级页面的路由 key（KernelSU 同款：交给 miuix-nav 的 [NavDisplay] 渲染）。 */
 private sealed interface Route : NavKey {
     data object Main : Route
@@ -133,6 +137,7 @@ private sealed interface Route : NavKey {
     data object About : Route
     data object Credits : Route
     data object Log : Route
+    data object Glass : Route
 }
 
 /**
@@ -167,11 +172,14 @@ fun LockBarScreen() {
                             ROUTE_THEME -> backStack.add(Route.Theme)
                             ROUTE_ABOUT -> backStack.add(Route.About)
                             ROUTE_LOG -> backStack.add(Route.Log)
+                            ROUTE_GLASS -> backStack.add(Route.Glass)
                         }
                     },
                 )
             }
             entry<Route.Hint> { HintTextScreen(onBack = { backStack.removeLastOrNull() }) }
+            // 玻璃参数：实时材质的九个旋钮（漫反射 / 模糊 / 折射 / 菲涅尔 / 高光 / 不透明度 …）
+            entry<Route.Glass> { GlassScreen(onBack = { backStack.removeLastOrNull() }) }
             entry<Route.Theme> { ThemeSettingsScreen(onBack = { backStack.removeLastOrNull() }) }
             // 关于页 → 引用与致谢：三层页，push 进去返回键/侧滑由 NavDisplay 自己接管
             entry<Route.About> {
@@ -211,6 +219,15 @@ private fun MainShell(
     var restart by remember { mutableStateOf<RestartStep?>(null) }
     /** 参数页取色器是否在显示；同样要让悬浮底栏退场。 */
     var arcColorDialog by remember { mutableStateOf(false) }
+    /**
+     * 数值输入弹窗是否在显示 —— 和取色器分开存：两条路写同一个布尔会互相覆盖
+     * （取色器的 SideEffect 每次重组都会把值推回来）。
+     *
+     * **状态必须落在 `if` 条件这一层**：只有 `if (… && !inputDialog)` 在组合里读它，
+     * 页面从事件回调写过来才立刻生效。写进一个没有组合读取者的中间变量，
+     * Compose 不知道它变了，开关就传不到 —— 第一版底栏纹丝不动正是栽在这里。
+     */
+    var inputDialog by remember { mutableStateOf(false) }
 
     // 只有浮动 + 玻璃 + 模糊都开着才录制背景层，否则底栏直接画纯色
     val glassActive = themeStore.floatingBar && themeStore.glass && themeStore.blur
@@ -291,6 +308,7 @@ private fun MainShell(
                             scrollBehavior = scrollBehavior,
                             onOpenSub = onOpenSub,
                             onModalChange = { arcColorDialog = it },
+                            onInputChange = { inputDialog = it },
                         )
 
                         else -> SettingsPage(
@@ -309,10 +327,12 @@ private fun MainShell(
 
         // 弹窗是模态的。底栏画在外层 Box 的最后，z 序压住弹窗，而且它不在 Scaffold 里、
         // 拿不到弹窗的整屏遮罩（该暗的地方它不暗），所以弹窗期间直接让它退场。
-        // 三个模态出口：重启弹窗、参数页取色器（文字页取色器所在页面本就没有底栏）。
+        // 四个模态出口各挂各的布尔：重启、参数页取色器、数值输入弹窗（文字页 / 玻璃页
+        // 没有底栏）。**下面这个条件是数值弹窗状态唯一的组合读取者** —— 状态必须留在
+        // 这一层，事件回调写过来才会立刻触发重组、立刻撤掉底栏。
         // onGloballyPositioned 在节点移出组合时不会再回调，barHeightPx 保留上次的值，
         // 内容区留白不会塌；下面的 >0 只是再兜一层底。
-        if (restart == null && !arcColorDialog) {
+        if (restart == null && !arcColorDialog && !inputDialog) {
             LockBottomBar(
                 tabs = tabs,
                 selectedIndex = tab,
@@ -570,23 +590,26 @@ private fun HintTextScreen(onBack: () -> Unit) {
 
             item {
                 GroupCard(title = stringResource(R.string.hint_group_style)) {
-                    SliderPreference(
+                    NumSliderPreference(
                         title = stringResource(R.string.pref_hint_size),
                         summary = stringResource(R.string.pref_hint_size_summary),
                         startAction = { PrefIcon(Icons.Rounded.Tune) },
                         value = hintSize,
                         onValueChange = { hintSize = it.coerceIn(6f, 40f) },
-                        valueText = "${hintSize.toInt()} sp",
+                        defaultValue = 12f,
                         valueRange = 6f..40f,
+                        unit = " sp",
                         steps = 33,
                     )
-                    SliderPreference(
+                    NumSliderPreference(
                         title = stringResource(R.string.pref_hint_weight),
                         summary = stringResource(R.string.pref_hint_weight_summary),
                         startAction = { PrefIcon(Icons.Rounded.Tune) },
+                        // 字重在远端配置里存的是 Int，value / onValueChange 都在这一层转，
+                        // 存储类型一个字都不能改（换 float 会让 LockConfig 读取抛异常）
                         value = hintWeight.toFloat(),
                         onValueChange = { hintWeight = it.toInt().coerceIn(100, 900) },
-                        valueText = "$hintWeight",
+                        defaultValue = 400f,
                         valueRange = 100f..900f,
                         steps = 7,
                     )
@@ -619,57 +642,59 @@ private fun HintTextScreen(onBack: () -> Unit) {
 
             item {
                 GroupCard(title = stringResource(R.string.hint_group_position)) {
-                    SliderPreference(
+                    NumSliderPreference(
                         title = stringResource(R.string.pref_hint_gap),
                         summary = stringResource(R.string.pref_hint_gap_summary),
                         startAction = { PrefIcon(Icons.Rounded.Swipe) },
                         value = hintGap,
                         onValueChange = { hintGap = it.coerceIn(0f, 96f) },
-                        valueText = "${hintGap.toInt()} dp",
+                        defaultValue = 10f,
                         valueRange = 0f..96f,
+                        unit = " dp",
                     )
-                    SliderPreference(
+                    NumSliderPreference(
                         title = stringResource(R.string.pref_hint_offset_x),
                         summary = stringResource(R.string.pref_hint_offset_x_summary),
                         startAction = { PrefIcon(Icons.Rounded.Swipe) },
                         value = hintOffsetX,
                         onValueChange = { hintOffsetX = it.coerceIn(-120f, 120f) },
-                        valueText = "${hintOffsetX.toInt()} dp",
+                        defaultValue = 0f,
                         valueRange = -120f..120f,
+                        unit = " dp",
                     )
                 }
             }
         }
 
-        OverlayDialog(
+        // 提示文字颜色与描边颜色共用同一个取色弹窗（内含 miuix ColorPalette）。
+        // 这里原先内联了一份和 ColorDialog 一模一样的 ColorPicker 对话框，规范做法是
+        // 复用组件 —— 顺带也换成了 ColorPalette。
+        ColorDialog(
             show = showHintColor,
+            color = pendingHintColor,
             title = stringResource(R.string.pref_hint_color),
-            onDismissRequest = commitHintColor,
-            // 同 RestartDialog：手机上默认贴底，改成居中方框形态
-            largeScreen = true,
-            content = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    ColorPicker(
-                        color = Color(pendingHintColor),
-                        onColorChanged = { pendingHintColor = it.toArgb() },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        Button(onClick = commitHintColor) {
-                            Text(text = stringResource(R.string.action_done))
-                        }
-                    }
-                }
-            },
+            onColorChange = { pendingHintColor = it },
+            onDismiss = commitHintColor,
         )
     }
 }
 
-/** 取色对话框（MiuiX 自带的 ColorPicker）。 */
+/**
+ * 取色对话框：miuix [ColorPalette]（HSV 网格 + 透明度滑条 + 顶部预览），用法照官方
+ * 文档的「弹窗选择」一节；**数值与输入框**照《OverlayDialog · 带有输入框的对话框》
+ * 那一节用 miuix [TextField] 补在下面 —— ColorPalette 自身只给网格和预览条，既没有
+ * 数值也没有输入框。描边颜色与提示文字颜色共用这一个。
+ *
+ * **刻意不传 `largeScreen`**：那是个覆盖项，取值 true = 「居中缩放淡入而非底部滑入」，
+ * 留 null 才按窗口尺寸自动检测，手机上就是 miuix 默认的底部滑入。当初传 true 是怕贴底
+ * 压住悬浮底栏，如今取色器打开时底栏已经会退场（`onModalChange`），理由不成立了；
+ * 而且二级页面（文字页 / 玻璃页）跟底栏是 NavDisplay 里互斥的两个 entry，那儿根本没有
+ * 底栏可压。
+ *
+ * 按钮只留一个「完成」：拖动过程中改的是 pending 值，**关掉弹窗才落盘**（提交逻辑在
+ * 调用方的 `commitArcColor` / `commitHintColor`），所以点外面也等于提交。照官方两按钮
+ * 范式补一个「取消」会和点外面的语义打架，这里刻意不加。
+ */
 @Composable
 internal fun ColorDialog(
     show: Boolean,
@@ -678,20 +703,66 @@ internal fun ColorDialog(
     onColorChange: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val colorScheme = MiuixTheme.colorScheme
+    // 输入框文本跟着当前颜色走（拖调色盘时一并刷新），光标钉在末尾好接着敲。
+    // 敲到 6 位十六进制才回写颜色，中途的半截文本原样留着，不打断输入。
+    val hexNow = hexOf(color)
+    var hexField by remember(color) {
+        mutableStateOf(TextFieldValue(text = hexNow, selection = TextRange(hexNow.length)))
+    }
     OverlayDialog(
         show = show,
         title = title,
         onDismissRequest = onDismiss,
-        // 同 RestartDialog：手机上默认贴底，会压在悬浮底栏上，改成居中方框形态
-        largeScreen = true,
         content = {
+            // 键盘弹出时弹窗被顶到键盘上方，可用高度可能装不下「调色盘 + 数值行 + 按钮」
+            // 整摞（内容约 560dp，剩不到 500dp）—— 溢出的部分会沉到弹窗圆角裁切线以下，
+            // 把「完成」切掉。所以按钮固定压底，调色盘与数值行收进可滚动区；不溢出时
+            // （没弹键盘）滚动列按内容收高，形态与原来逐像素一致。
             Column(modifier = Modifier.fillMaxWidth()) {
-                ColorPicker(
-                    color = Color(color),
-                    onColorChanged = { onColorChange(it.toArgb()) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Column(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    ColorPalette(
+                        color = Color(color),
+                        onColorChanged = { onColorChange(it.toArgb()) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // #RRGGBB 输入框：miuix 输入组件，写法与数值弹窗里那个同源
+                        TextField(
+                            value = hexField,
+                            onValueChange = { next ->
+                                hexField = next
+                                val digits = next.text.removePrefix("#")
+                                val ok = digits.length == 6 &&
+                                    digits.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }
+                                if (ok) {
+                                    // 保留 alpha：不透明度归「描边透明度 / 提示透明度」那条管，
+                                    // 这里只换 RGB 三个字节
+                                    onColorChange((color and 0x00FFFFFF) or digits.toInt(16))
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            textStyle = MiuixTheme.textStyles.main
+                                .copy(color = MiuixTheme.colorScheme.onBackground),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        // 当前颜色的数值，随取色实时刷新；输入到半截非法文本时显示的仍是上一个有效色
+                        Text(
+                            text = "R ${(color shr 16) and 0xFF}  G ${(color shr 8) and 0xFF}  B ${color and 0xFF}",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                }
                 Spacer(Modifier.height(16.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),

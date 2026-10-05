@@ -31,12 +31,47 @@ public final class Prefs {
     public static final String KEY_PARALLAX = "parallax";
     public static final String KEY_HANDLE_ALPHA = "handle_alpha";
     public static final String KEY_DRAG_RATIO = "drag_ratio";
+    /** 速度解锁（1.0.22）：松手时上滑够快就直接进解锁，不再要求划到一半。 */
+    public static final String KEY_FLICK_UNLOCK = "flick_unlock";
+    /** 速度解锁的触发阈值（dp/s，越小越容易触发）。 */
+    public static final String KEY_FLICK_VELOCITY = "flick_velocity";
+    /** 解锁动画时长（ms）：触发解锁后条飞到屏幕顶所用的时间，150..800，缺省 340。 */
+    public static final String KEY_UNLOCK_MS = "unlock_ms";
     public static final String KEY_ARC_ENABLED = "arc_enabled";
     public static final String KEY_ARC_DIM = "arc_dim";
     /** 压暗强度（只作用于压暗模式）。 */
     public static final String KEY_DIM_STRENGTH = "dim_strength";
     /** 压暗哪一半：false = 弧线下方（默认）、true = 弧线上方的锁屏内容。 */
     public static final String KEY_DIM_UPPER = "dim_upper";
+    /** 液态玻璃实时渲染弧形描边（1.0.22）。 */
+    public static final String KEY_GLASS_LIVE = "glass_live";
+    /** 上滑时背景整体高斯模糊（1.0.22）。 */
+    public static final String KEY_BLUR_ENABLED = "blur_enabled";
+    /** 模糊程度 0..1（0 = 关闭，1 = 满强度 20dp 半径）。 */
+    public static final String KEY_BLUR_STRENGTH = "blur_strength";
+    /** 玻璃带厚度（dp）：1..40，缺省 20，与「描边宽度」完全无关。 */
+    public static final String KEY_GLASS_THICK = "glass_thick";
+
+    /**
+     * 「玻璃参数」页的九项（1.0.22）：实时材质的九个旋钮。
+     *
+     * <p>键名与 {@code LockConfig} 里同名，字符串两边必须逐字一致 —— 远端配置走的
+     * 是共享的 SharedPreferences，任何一处拼错都会变成「界面在动、玻璃没反应」，
+     * 而且不报错、不崩溃，最难查的那种。
+     *
+     * <p>取值范围与默认值统一由 {@code LockConfig} 负责（clamp + LockGlassStrip.K_*），
+     * 这里只放键名。
+     */
+    public static final String KEY_GLASS_DIFFUSE = "glass_diffuse";
+    public static final String KEY_GLASS_BLUR = "glass_blur";
+    public static final String KEY_GLASS_REFRACT = "glass_refract";
+    public static final String KEY_GLASS_EDGE_REF = "glass_edge_ref";
+    public static final String KEY_GLASS_REFRACT_W = "glass_refract_w";
+    public static final String KEY_GLASS_FRESNEL = "glass_fresnel";
+    public static final String KEY_GLASS_HIGHLIGHT = "glass_highlight";
+    public static final String KEY_GLASS_HL_WIDTH = "glass_hl_width";
+    public static final String KEY_GLASS_OPACITY = "glass_opacity";
+
     public static final String KEY_ARC_WIDTH = "arc_width";
     public static final String KEY_ARC_ALPHA = "arc_alpha";
     public static final String KEY_ARC_COLOR = "arc_color";

@@ -22,6 +22,9 @@ import io.github.libxposed.api.XposedModule;
  *       {@code MOVE}，系统那条上滑解锁根本不会发生，同时用它驱动“时间上移”；</li>
  *   <li>{@code NotificationShadeWindowView#onInterceptTouchEvent(MotionEvent)} —— 落点在小白条
  *       触控区里就强制不拦截（手势一定归我们）；</li>
+ *   <li>控制中心开合的两条布尔回调（keyguard 侧 {@code onExpandChanged(boolean)}、container
+ *       委托 {@code onVisibleChanged(boolean)}）—— 展开期间拦截与小白条整套让路
+ *       （1.0.22 反馈：开着控制中心时上滑被模块劫持，关不掉也往上推不动）；</li>
  *   <li>{@code KeyguardStateControllerImpl#notifyKeyguardState(boolean, boolean)} ——
  *       解锁 / 被应用遮挡时立刻复位位移与裁切。</li>
  * </ul>
@@ -190,6 +193,17 @@ final class LockBarHooks {
                     return result;
                 });
 
+        // 控制中心开合状态（两条布尔回调互为兜底；类与方法名取自本机型 SystemUI dex 实证）：
+        // 展开期间拦截不再吞事件、小白条这次按下不消费 —— 否则锁屏上滑关不掉控制中心、
+        // 任何向上动作失灵，底部上滑还会误触发模块解锁（1.0.22 反馈）。
+        // 每条单独 try/catch：挂不上只是退回老行为，不能拖垮前面的 hook。
+        controlCenterOpen(module, classLoader,
+                "com.android.keyguard.injector.KeyguardPanelViewInjector$onControlCenterExpandChangedListener$1",
+                "onExpandChanged");
+        controlCenterOpen(module, classLoader,
+                "com.miui.systemui.controlcenter.container.ControlCenterExpandControllerDelegate",
+                "onVisibleChanged");
+
         // 附加 hook：捕获 StatusBarKeyguardViewManager，供“拉满直接进解锁界面”用。
         // 每个都单独 try/catch —— 挂不上只是没有那个效果，不能拖垮小白条本体。
         // 构造器最可靠（Dagger 单例一被 new 出来就抓到），其次才是那几个会被调用的方法。
@@ -211,7 +225,7 @@ final class LockBarHooks {
                 "com.android.systemui.statusbar.phone.StatusBarKeyguardViewManager",
                 "show", new Class<?>[]{}, "lockbar-capture-show2");
 
-        ModuleLog.d("主 hook 就位：attach / touch / intercept / keyguard-state");
+        ModuleLog.d("主 hook 就位：attach / touch / intercept / cc-open / keyguard-state");
         ModuleLog.flush();
     }
 
@@ -365,6 +379,34 @@ final class LockBarHooks {
         } catch (Throwable t) {
             LockBarUnlock.noteCapture(where, false, t.getClass().getSimpleName());
             ModuleLog.w("跳过方法捕获 " + className + "#" + method + "（只影响“拉满进解锁界面”）", t);
+        }
+    }
+
+    /**
+     * 挂一条“控制中心开合”的布尔回调：参数原样写进控制器的让路开关
+     * （{@link LockBarController#onControlCenterOpen(boolean)}）。
+     *
+     * <p>两条路径语义一致、互为兜底：哪条挂不上或没响，另一条仍能把状态纠正过来；
+     * 单条失败只记 {@link ModuleLog#w}，不影响已装好的 hook。
+     */
+    private static void controlCenterOpen(XposedModule module, ClassLoader classLoader,
+                                          String className, String methodName) {
+        try {
+            Method m = declared(classLoader.loadClass(className), methodName, boolean.class);
+            module.hook(m)
+                    .setId("lockbar-cc-open")
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            LockBarController.onControlCenterOpen((Boolean) chain.getArg(0));
+                        } catch (Throwable t) {
+                            module.log(5, TAG, "cc open hook failed", t);
+                        }
+                        return result;
+                    });
+        } catch (Throwable t) {
+            ModuleLog.w("跳过控制中心开合 hook " + className + "#" + methodName, t);
         }
     }
 

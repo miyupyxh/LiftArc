@@ -28,13 +28,18 @@ import android.widget.FrameLayout;
  */
 final class LockHandleView extends FrameLayout {
 
-    /** 手势回调，progress 始终为 0..1。 */
+    /**
+     * 手势回调，progress 始终为 0..1。
+     *
+     * <p>{@code velocityUpPx} = 松手瞬间手指的向上速度（px/s，正值 = 上滑），
+     * 在 ACTION_UP 上由 {@link #velocityUpPx()} 现算后透出去，给「速度解锁」用。
+     */
     interface Callback {
         void onDragStart(float y);
 
         void onDragMove(float dy, float progress);
 
-        void onDragEnd(float dy, float progress, boolean cancel);
+        void onDragEnd(float dy, float progress, float velocityUpPx, boolean cancel);
     }
 
     /** navigation_handle_radius */
@@ -55,6 +60,14 @@ final class LockHandleView extends FrameLayout {
     private boolean dragging;
     /** 本次手势累计位移换算成进度时的分母（屏幕高度的某个比例）。 */
     private float rangePx = 1f;
+
+    // ---- 松手速度采样（「速度解锁」用）----
+    // 只留最近一小段 (事件时间, y)，松手时拿末段斜率当手指速度。
+    private static final int VEL_N = 32;
+    private static final long VEL_WINDOW_MS = 160L;
+    private final long[] vT = new long[VEL_N];
+    private final float[] vY = new float[VEL_N];
+    private int vCount;
 
     LockHandleView(Context context) {
         super(context);
@@ -143,14 +156,88 @@ final class LockHandleView extends FrameLayout {
         canvas.drawRoundRect(rect, radius, radius, paint);
     }
 
+    /**
+     * 记一个 (事件时间, y) 样本；缓冲满就把最老的挤掉。
+     *
+     * <p>32 点在 120Hz 下约 267ms、60Hz 下约 533ms，都盖得住一次甩动。
+     * 满了才开始移位，慢拖时不产生任何每帧开销。
+     */
+    private void vPush(long t, float y) {
+        if (vCount < VEL_N) {
+            vT[vCount] = t;
+            vY[vCount] = y;
+            vCount++;
+            return;
+        }
+        System.arraycopy(vT, 1, vT, 0, VEL_N - 1);
+        System.arraycopy(vY, 1, vY, 0, VEL_N - 1);
+        vT[VEL_N - 1] = t;
+        vY[VEL_N - 1] = y;
+    }
+
+    /**
+     * 松手瞬间手指的向上速度，单位 px/s，正值 = 上滑。
+     *
+     * <p>取「末点往前、落在最近 {@link #VEL_WINDOW_MS} 内」的最早那个样本算斜率 ——
+     * 只看最近一段，量到的才是**松手那一刻**在甩还是在拖；整段平均会把
+     * 「先慢慢拖、最后一下甩」抹平。窗口里凑不出第二个时间点（慢拖且事件被系统
+     * 批处理成同一时间戳）时就一直往前退，退到第一个 dt&gt;0 的样本对为止，
+     * 全程退无可退才返回 0。
+     *
+     * <p>返回 0 = 速度判定不成立，调用方照旧走「进度 ≥ UNLOCK_THRESHOLD」那条路。
+     */
+    private float velocityUpPx() {
+        if (vCount < 2) {
+            return 0f;
+        }
+        int last = vCount - 1;
+        long tLast = vT[last];
+        float yLast = vY[last];
+        int inWindow = -1;
+        int nearest = -1;
+        for (int i = last - 1; i >= 0; i--) {
+            long dt = tLast - vT[i];
+            if (dt <= 0L) {
+                // 批处理出来的同时间戳点没有斜率可言，跳过它继续往前找
+                continue;
+            }
+            if (nearest < 0) {
+                nearest = i;
+            }
+            if (dt <= VEL_WINDOW_MS) {
+                // 还在窗口内：继续往前，窗口里最老的那个基线才够长
+                inWindow = i;
+            } else {
+                break;
+            }
+        }
+        int first = inWindow >= 0 ? inWindow : nearest;
+        if (first < 0) {
+            return 0f;
+        }
+        long dt = tLast - vT[first];
+        if (dt <= 0L) {
+            return 0f;
+        }
+        // y 变小 = 手指往上 = 正速度
+        return (vY[first] - yLast) * 1000f / (float) dt;
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                // 控制中心开着时小白条整条让路：这次按下不消费，事件原样交给系统 ——
+                // 上滑关控制中心、系统自己的手势都照常，解锁动画绝不误触发（1.0.22 反馈）
+                if (LockBarController.controlCenterOpen()) {
+                    return false;
+                }
                 downY = event.getRawY();
                 totalDy = 0f;
                 dragging = false;
+                vCount = 0;
+                vPush(event.getEventTime(), downY);
                 // 一按下就告诉父窗口别拦截：锁屏窗口的 onInterceptTouchEvent 里
                 // 有一堆 MIUI 的手势判断，晚一步这条手势就可能被抢走
                 if (getParent() != null) {
@@ -164,6 +251,7 @@ final class LockHandleView extends FrameLayout {
             case MotionEvent.ACTION_MOVE: {
                 float dy = downY - event.getRawY();   // 上滑为正
                 totalDy = dy;
+                vPush(event.getEventTime(), event.getRawY());
                 if (!dragging && Math.abs(dy) > 4f * getResources().getDisplayMetrics().density) {
                     dragging = true;
                     if (getParent() != null) {
@@ -180,10 +268,12 @@ final class LockHandleView extends FrameLayout {
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL: {
                 boolean cancel = event.getActionMasked() == MotionEvent.ACTION_CANCEL;
+                vPush(event.getEventTime(), event.getRawY());
                 if (callback != null) {
                     float progress = LockGlass.clamp01(totalDy / rangePx);
-                    callback.onDragEnd(totalDy, progress, cancel || !dragging);
+                    callback.onDragEnd(totalDy, progress, velocityUpPx(), cancel || !dragging);
                 }
+                vCount = 0;
                 dragging = false;
                 performClick();
                 return true;

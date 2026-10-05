@@ -27,6 +27,12 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     private static final String KEY_PARALLAX = "parallax";
     private static final String KEY_HANDLE_ALPHA = "handle_alpha";
     private static final String KEY_DRAG_RATIO = "drag_ratio";
+    /** 速度解锁（1.0.22）：松手时上滑速度达标就直接进解锁。 */
+    private static final String KEY_FLICK_UNLOCK = "flick_unlock";
+    /** 速度解锁的触发阈值（dp/s）。 */
+    private static final String KEY_FLICK_VELOCITY = "flick_velocity";
+    /** 解锁动画时长（ms）：触发解锁后条从松手位置飞到屏幕顶所用的时间。 */
+    private static final String KEY_UNLOCK_MS = "unlock_ms";
     private static final String KEY_ARC_ENABLED = "arc_enabled";
     /** true = iOS 式压暗（压弧线以下露出的区域，靠明暗对比出弧线），false = 传统描边光边。 */
     private static final String KEY_ARC_DIM = "arc_dim";
@@ -34,6 +40,26 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     private static final String KEY_DIM_STRENGTH = "dim_strength";
     /** 压暗哪一半：false = 弧线下方（默认）、true = 弧线上方的锁屏内容。 */
     private static final String KEY_DIM_UPPER = "dim_upper";
+    /** 液态玻璃实时渲染弧形描边（1.0.22）。 */
+    private static final String KEY_GLASS_LIVE = "glass_live";
+    /** 玻璃带厚度（dp）：0 = 跟随 arc_width（默认），>0 = 以弧线为轴的独立宽度，白描边不受影响。 */
+    private static final String KEY_GLASS_THICK = "glass_thick";
+    /** 上滑时背景整体高斯模糊（1.0.22）。 */
+    private static final String KEY_BLUR_ENABLED = "blur_enabled";
+    /** 模糊程度 0..1：随上滑进度连续渐强，满强度 = 20dp 半径。 */
+    private static final String KEY_BLUR_STRENGTH = "blur_strength";
+    // 「玻璃参数」页的九项。默认值不在这里写死 —— 统一取 LockGlassStrip.K_*，
+    // 那组常量同时是玻璃 strip 的字段初值，所以界面显示的默认值和实际下发的
+    // 默认值永远是同一个数，不存在两处各写一份、改了一处忘了另一处的可能。
+    private static final String KEY_GLASS_DIFFUSE = "glass_diffuse";
+    private static final String KEY_GLASS_BLUR = "glass_blur";
+    private static final String KEY_GLASS_REFRACT = "glass_refract";
+    private static final String KEY_GLASS_EDGE_REF = "glass_edge_ref";
+    private static final String KEY_GLASS_REFRACT_W = "glass_refract_w";
+    private static final String KEY_GLASS_FRESNEL = "glass_fresnel";
+    private static final String KEY_GLASS_HIGHLIGHT = "glass_highlight";
+    private static final String KEY_GLASS_HL_WIDTH = "glass_hl_width";
+    private static final String KEY_GLASS_OPACITY = "glass_opacity";
     private static final String KEY_ARC_WIDTH = "arc_width";
     private static final String KEY_ARC_ALPHA = "arc_alpha";
     private static final String KEY_ARC_COLOR = "arc_color";
@@ -168,12 +194,47 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     String hintText = "";
     float handleAlpha = 1f;
     float dragRatio = 0.85f;
+    /** 速度解锁：松手时上滑够快就直接进解锁，与「进度 ≥ 0.5」并列，互不取代。 */
+    boolean flickUnlock = true;
+    /** 速度解锁的触发阈值（dp/s）。 */
+    float flickVelocity = 1200f;
+    /** 解锁动画时长（ms）。默认 340 = 上一轮写死的那个值，现改成可调。 */
+    float unlockMs = 340f;
     float arcWidth = 3f;
     float arcAlpha = 1f;
     /** 压暗强度 0..1（固定值直接套用，不随进度递增；只作用于压暗模式）。 */
     float dimStrength = 0.57f;
     /** 压暗哪一半：false = 弧线下方露出的区域（默认），true = 弧线上方的锁屏内容。 */
     boolean dimUpper;
+    /** 液态玻璃实时渲染弧形描边：true = 沿弧线交给系统 MiGlass 实时渲染（1.0.22）。 */
+    boolean glassLive;
+    /** 玻璃带厚度（dp）：1..40，缺省 20，与 arcWidth 完全无关。 */
+    float glassThick;
+    /** 上滑时背景模糊：true = 上滑过程给内容树挂高斯 RenderEffect（1.0.22）。 */
+    boolean blurEnabled;
+    /** 模糊程度 0..1：随上滑进度连续渐强，满强度 = 20dp 半径。 */
+    float blurStrength = 0.7f;
+    // ------------------------------------------------「玻璃参数」页的九项
+    // 顺序必须与 LockGlassStrip.setGlassTuning 的形参顺序一致：
+    // diffuse / blurPx / refract / edgeRef / refractW / fresnel / highlight / hlWidth / opacity
+    /** 漫反射 diffuseStrength 0..1。 */
+    float glassDiffuse = LockGlassStrip.K_DIFFUSE;
+    /** 背景模糊基准 blurRadius（物理像素）0..20。 */
+    float glassBlur = LockGlassStrip.K_BLUR_PX;
+    /** 折射强度 refractionStrength 0..0.90 —— 上限卡在 0.90，见下。 */
+    float glassRefract = LockGlassStrip.K_REFRACT;
+    /** 边缘折射 edgeRefraction 0..0.50 —— 与上面那个上限成对，两者不能一起拉满。 */
+    float glassEdgeRef = LockGlassStrip.K_EDGE_REFRACT;
+    /** 折射范围 refractionWidth 0..1。 */
+    float glassRefractW = LockGlassStrip.K_REFRACT_W;
+    /** 菲涅尔 fresnelStrength 0..1。 */
+    float glassFresnel = LockGlassStrip.K_FRESNEL;
+    /** 边缘高光 highlightIntensity 0..1。 */
+    float glassHighlight = LockGlassStrip.K_HIGHLIGHT;
+    /** 高光宽度 highlightWidth 0.30..1.50。 */
+    float glassHlWidth = LockGlassStrip.K_HL_WIDTH;
+    /** 玻璃整体不透明度 opacity 0.20..1 —— 下限 0.20，调 0 等于关掉玻璃。 */
+    float glassOpacity = LockGlassStrip.K_OPACITY;
     int arcColor = Color.WHITE;
     /** 小横条上方文字：大小(sp) / 粗细 / 字体索引 / 颜色 / 与条的间距(dp) / 水平偏移(dp)。 */
     float hintSize = 12f;
@@ -238,10 +299,26 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
             hintText = "";
             handleAlpha = 1f;
             dragRatio = 0.85f;
+            flickUnlock = true;
+            flickVelocity = 1200f;
+            unlockMs = 340f;
             arcWidth = 3f;
             arcAlpha = 1f;
             dimStrength = 0.57f;
             dimUpper = false;
+            glassLive = false;
+            blurEnabled = false;
+            blurStrength = 0.7f;
+            glassThick = 20f;
+            glassDiffuse = LockGlassStrip.K_DIFFUSE;
+            glassBlur = LockGlassStrip.K_BLUR_PX;
+            glassRefract = LockGlassStrip.K_REFRACT;
+            glassEdgeRef = LockGlassStrip.K_EDGE_REFRACT;
+            glassRefractW = LockGlassStrip.K_REFRACT_W;
+            glassFresnel = LockGlassStrip.K_FRESNEL;
+            glassHighlight = LockGlassStrip.K_HIGHLIGHT;
+            glassHlWidth = LockGlassStrip.K_HL_WIDTH;
+            glassOpacity = LockGlassStrip.K_OPACITY;
             arcColor = Color.WHITE;
             hintSize = 12f;
             hintWeight = 400;
@@ -268,10 +345,35 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
             hintText = value(getStr(p, KEY_HINT_TEXT, ""));
             handleAlpha = clamp(getFlt(p, KEY_HANDLE_ALPHA, 1f), 0.05f, 1f);
             dragRatio = clamp(getFlt(p, KEY_DRAG_RATIO, 0.85f), 0.2f, 1f);
+            flickUnlock = getBool(p, KEY_FLICK_UNLOCK, true);
+            flickVelocity = clamp(getFlt(p, KEY_FLICK_VELOCITY, 1200f), 300f, 3000f);
+            // 下限 150：再短就比一帧帧的手指反应还快，观感是「瞬移」；上限 800 已经很拖沓
+            unlockMs = clamp(getFlt(p, KEY_UNLOCK_MS, 340f), 150f, 800f);
             arcWidth = clamp(getFlt(p, KEY_ARC_WIDTH, 3f), 0.5f, 20f);
             arcAlpha = clamp(getFlt(p, KEY_ARC_ALPHA, 1f), 0.05f, 1f);
             dimStrength = clamp(getFlt(p, KEY_DIM_STRENGTH, 0.57f), 0.05f, 1f);
             dimUpper = getBool(p, KEY_DIM_UPPER, false);
+            glassLive = getBool(p, KEY_GLASS_LIVE, false);
+            blurEnabled = getBool(p, KEY_BLUR_ENABLED, false);
+            blurStrength = clamp(getFlt(p, KEY_BLUR_STRENGTH, 0.7f), 0f, 1f);
+            // 必须走 getFlt：远端存类型原样，直接 getString 会 ClassCastException 整模块报废
+            glassThick = clamp(getFlt(p, KEY_GLASS_THICK, 20f), 1f, 40f);
+            // 「玻璃参数」页九项。
+            //
+            // 折射强度上限 0.90 与边缘折射上限 0.50 是**成对**的一条安全线：
+            // 采样雅可比 = 1 - refractK * (0.82 * (1 + 0.36 * edgeRef) + 0.10)，
+            // 两条都拉满时 = 1 - 0.90 * 1.0676 = 0.039 > 0，恰好不折叠；
+            // 再往上背景就会对折过来，表现为重复 / 幽灵纹理（1.0.21 排查过的那个）。
+            // 所以这里宁可让滑条到顶也绝不越界，而不是相信「用户不会两个都拉满」。
+            glassDiffuse = clamp(getFlt(p, KEY_GLASS_DIFFUSE, LockGlassStrip.K_DIFFUSE), 0f, 1f);
+            glassBlur = clamp(getFlt(p, KEY_GLASS_BLUR, LockGlassStrip.K_BLUR_PX), 0f, 20f);
+            glassRefract = clamp(getFlt(p, KEY_GLASS_REFRACT, LockGlassStrip.K_REFRACT), 0f, 0.90f);
+            glassEdgeRef = clamp(getFlt(p, KEY_GLASS_EDGE_REF, LockGlassStrip.K_EDGE_REFRACT), 0f, 0.50f);
+            glassRefractW = clamp(getFlt(p, KEY_GLASS_REFRACT_W, LockGlassStrip.K_REFRACT_W), 0f, 1f);
+            glassFresnel = clamp(getFlt(p, KEY_GLASS_FRESNEL, LockGlassStrip.K_FRESNEL), 0f, 1f);
+            glassHighlight = clamp(getFlt(p, KEY_GLASS_HIGHLIGHT, LockGlassStrip.K_HIGHLIGHT), 0f, 1f);
+            glassHlWidth = clamp(getFlt(p, KEY_GLASS_HL_WIDTH, LockGlassStrip.K_HL_WIDTH), 0.30f, 1.50f);
+            glassOpacity = clamp(getFlt(p, KEY_GLASS_OPACITY, LockGlassStrip.K_OPACITY), 0.20f, 1f);
             arcColor = getIn(p, KEY_ARC_COLOR, Color.WHITE);
             hintSize = clamp(getFlt(p, KEY_HINT_SIZE, 12f), 6f, 40f);
             // hint_weight 由 App 侧 rememberPrefInt 写入 → 远端存的是 Integer，

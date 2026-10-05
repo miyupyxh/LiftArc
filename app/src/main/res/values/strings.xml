@@ -11,6 +11,14 @@
     <string name="action_done">完成</string>
     <string name="action_back">返回</string>
 
+    <!-- 数值参数的直接输入对话框（点参数条弹出） -->
+    <string name="numdlg_invalid">请输入数字</string>
+    <string name="numdlg_out_of_range">超出范围</string>
+    <string name="numdlg_range">范围</string>
+    <string name="numdlg_restore">恢复默认</string>
+    <string name="numdlg_cancel">取消</string>
+    <string name="numdlg_confirm">确认</string>
+
     <!-- 底栏 -->
     <string name="tab_home">首页</string>
     <string name="tab_params">参数</string>
@@ -49,7 +57,7 @@
     <string name="pref_parallax">上滑联动</string>
     <string name="pref_parallax_summary">上滑时壁纸、时间、快捷方式一起上移</string>
     <string name="pref_intercept_swipe">拦截系统上滑解锁</string>
-    <string name="pref_intercept_swipe_summary">关掉系统自己的上滑解锁，改成只有时间跟着手指上移，到时间一半就停住，松手弹性归位；通知列表还能划，左右下角快捷方式不受影响</string>
+    <string name="pref_intercept_swipe_summary">关掉系统自己的上滑解锁，改成只有时间跟着手指上移，到时间一半就停住，松手弹性归位；通知列表还能划，控制中心开合不受影响，左右下角快捷方式不受影响</string>
     <string name="pref_handle_wide">扩大触控范围</string>
     <string name="pref_handle_wide_summary">触控区向左右扩展到屏幕两边（底部 36dp 整条都能按到），条本体外观不变</string>
     <string name="pref_hint_page">小横条上方文字</string>
@@ -61,6 +69,12 @@
     <string name="pref_drag_ratio_summary">数值越大越贴手：100% 时内容与手指完全同步（1:1），需要滑满整屏才拉满；数值越小行程越短、轻轻一滑就到底，但内容会跑在手指前面。拖满行程后不管数值多少都会完全滑出屏幕，不会卡在半屏</string>
     <string name="pref_release_return">松手回弹</string>
     <string name="pref_release_return_summary">拉到一半以下松手会弹回原位；关闭则停在原地。拉到一半以上松手直接进解锁</string>
+    <string name="pref_flick_unlock">速度解锁</string>
+    <string name="pref_flick_unlock_summary" formatted="false">松手那一瞬间手指上滑够快就直接进解锁，不必再划到一半；慢慢拖仍旧要划过半才解锁。跟手程度拉到 100% 时行程接近半屏，开这条甩一下就走</string>
+    <string name="pref_flick_velocity">触发速度</string>
+    <string name="pref_flick_velocity_summary" formatted="false">上滑速度达到该值就解锁，单位 dp/s。越小越容易触发；拉到 3000 基本只有狠狠一甩才会触发</string>
+    <string name="pref_unlock_ms">解锁动画时长</string>
+    <string name="pref_unlock_ms_summary" formatted="false">触发解锁后，条继续往上飞到屏幕顶所用的时间，单位毫秒；飞完这一段才弹出密码盘。拉小更干脆，拉大更从容</string>
     <string name="pref_haptic">触感反馈</string>
     <string name="pref_haptic_summary">越过阈值与回弹时轻微震动</string>
     <string name="pref_handle_alpha">小白条不透明度</string>
@@ -79,8 +93,50 @@
     <string name="pref_dim_side_lower">下半部分</string>
     <string name="pref_dim_strength">压暗强度</string>
     <string name="pref_dim_strength_summary" formatted="false">上滑时压暗区域的深浅：越大越黑（默认 57%），100% 纯黑、调低更通透；仅压暗模式生效</string>
+    <string name="pref_glass_live">液态玻璃实时渲染弧形描边</string>
+    <string name="pref_glass_live_summary">把这条弧线交给系统原生液态玻璃：背景实时采样、折射、模糊、边缘高光全部跟着上滑动画走，不逐帧截屏</string>
     <string name="pref_arc_width">描边宽度</string>
     <string name="pref_arc_width_summary">光边的粗细</string>
+    <string name="pref_glass_thick">玻璃厚度</string>
+    <string name="pref_glass_thick_summary" formatted="false">玻璃带的粗细，与描边宽度完全独立：以弧线为轴对称加宽或收窄，白描边不受影响。1~40dp，默认 20dp，调大更有厚度与体积感</string>
+
+    <!-- 玻璃参数（独立二级页，1.0.22） -->
+    <string name="pref_glass_page">玻璃参数</string>
+    <string name="pref_glass_page_summary">上滑玻璃的实时材质：漫反射 / 模糊 / 折射 / 菲涅尔 / 高光 / 不透明度 / 厚度</string>
+    <string name="pref_glass_page_off">玻璃当前未开启，本页参数不会生效。开关在 参数 → 玻璃 → 液态玻璃实时渲染弧形描边。</string>
+    <!-- 上滑背景模糊（1.0.22） -->
+    <string name="group_blur">模糊</string>
+    <string name="pref_blur_on">背景模糊</string>
+    <string name="pref_blur_on_summary">上滑时模糊底层背景</string>
+    <string name="pref_blur_strength">模糊程度</string>
+    <string name="pref_blur_strength_summary" formatted="false">背景越高越糊（默认 70%），随上滑进度从清晰连续渐强</string>
+    <string name="group_glass">玻璃</string>
+    <string name="group_glass_mat">玻璃材质</string>
+    <string name="group_glass_refract">折射</string>
+    <string name="group_glass_light">高光</string>
+    <string name="group_glass_reset">重置与说明</string>
+
+    <string name="pref_glass_opacity">玻璃不透明度</string>
+    <string name="pref_glass_opacity_summary">玻璃带的总体浓度。全程恒定，不随上滑进度淡入淡出</string>
+    <string name="pref_glass_diffuse">漫反射</string>
+    <string name="pref_glass_diffuse_summary">玻璃被背景照亮多少：取色来自远景模糊与场景亮度，不是固定的白</string>
+    <string name="pref_glass_blur">背景模糊</string>
+    <string name="pref_glass_blur_summary">带中线最糊、靠边收窄做出厚度；调太大折射会被抹平，只剩磨砂</string>
+    <string name="pref_glass_refract">折射强度</string>
+    <string name="pref_glass_refract_summary">背景穿过玻璃时被掰弯的幅度，上限 0.90，再高背景会对折出重复纹理</string>
+    <string name="pref_glass_edge_ref">边缘折射</string>
+    <string name="pref_glass_edge_ref_summary">越靠弧线掰得越狠的那部分，上限 0.50，与折射强度成对、不能同时拉满</string>
+    <string name="pref_glass_refract_w">折射范围</string>
+    <string name="pref_glass_refract_w_summary">折射集中在最外圈，还是铺满整个玻璃带</string>
+    <string name="pref_glass_fresnel">菲涅尔</string>
+    <string name="pref_glass_fresnel_summary">掠射角越强的反光：让边缘比中心更亮，更接近真玻璃</string>
+    <string name="pref_glass_highlight">边缘高光</string>
+    <string name="pref_glass_highlight_summary">外缘细亮线的强度；实际亮度跟着背景明暗走，不是一片死白</string>
+    <string name="pref_glass_hl_width">高光宽度</string>
+    <string name="pref_glass_hl_width_summary">高光铺开的宽窄：调大是一整片柔和反光，调小是一条细亮线</string>
+    <string name="pref_glass_reset">恢复默认参数</string>
+    <string name="pref_glass_note">折射强度与边缘折射的上限是成对的安全线：同时拉满时采样恰好不折叠，再放宽背景就会出现重复或幽灵纹理。想更通透优先加大玻璃厚度，它不占这条线。</string>
+    <string name="pref_glass_const">玻璃强度全程恒定，不再跟随上滑进度从无到有地淡入；位置与液态流动仍然实时跟着手势走。</string>
     <string name="pref_arc_alpha">描边不透明度</string>
     <string name="pref_arc_alpha_summary">整体亮度</string>
     <string name="pref_arc_color">描边颜色</string>
@@ -164,6 +220,10 @@
     <string name="about_framework_value">LSPosed (libxposed API 102)</string>
     <string name="about_module">模块信息</string>
     <string name="about_module_summary">锁屏上滑联动与屏幕圆角弧光</string>
+
+    <!-- 关于页：访问本项目仓库（卡片放在「引用与致谢」入口正上方） -->
+    <string name="about_project">访问该项目</string>
+    <string name="about_project_summary">打开本模块的 GitHub 仓库，查看更新日志、反馈问题与源码</string>
 
     <!-- 引用与致谢（关于页 → 引用与致谢，二级页） -->
     <string name="about_credits">引用与致谢</string>
