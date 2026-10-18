@@ -282,26 +282,17 @@ final class LockGlassStrip extends View {
                     + "    aEdge = min(aEdge, smoothstep(-1.0, 0.0, u));\n"
                     // TAPER THE BAND OUT AT BOTH BUTT CAPS.
                     //
-                    // strokeCenter's centreline is an OPEN path, so getFillPath closes
-                    // each end with a horizontal Paint.Cap.BUTT cut at y = bottomY - botR,
-                    // one at each screen edge. Until the inner ring takes over at
-                    // x = 2*halfW that straight cut IS the band's top face, and there
-                    // u = 0 so aEdge reads 1: full opacity glass starting abruptly with
-                    // bare wallpaper directly above it - a perfectly horizontal hard edge
-                    // ~84px long at each end of the arc. That is the seam circled in the
-                    // two screenshots. LockRimView's cloth is no longer part of it: both
-                    // sides of the cut sit inside the shell and read the same dimF, so
-                    // what is left is the glass itself being chopped.
-                    //
-                    // endFade measures the distance to the two cap SEGMENTS (x beyond the
-                    // cap's half-length, y below the cap line), so it is exactly 0 along the
-                    // whole cut and 1 one band-width away - the segment the code tests,
-                    // [capL - hw, capL + hw] x {capY}, is exactly that top face. aEdge feeds
-                    // dFade as well, so the refraction and the blur stop growing on the same
-                    // ramp: the band eases to nothing instead of being chopped, and where it
-                    // is chopped there is no alpha left to show a step with.
+                    // glassedge1 起 strokeCenter 是一条 U（左右直边 + 底边），两端
+                    // BUTT 端帽从圆角切点挪到了形状顶 topY（= edge - 屏高，永远 ≤ 0，
+                    // 屏外收口）。endFade 的度量对象不变 —— 还是那两段 [capL±hw]×{capY}
+                    // 的端帽线，只是它们现在画在屏幕上方：屏上几乎处处读 1，只有手势
+                    // 头几帧（topY 还在 2×halfW 以内）会把最顶两行按几何真相渐隐。
+                    // 转角处原先「圆角切点水平硬切 + 两端渐隐」的死区随 U 形消失，
+                    // 玻璃沿两边一路连续到圆角（边缘全是玻璃，上边不封口）。
+                    // aEdge 仍要喂 endFade → dFade：真出现端帽时折射与模糊跟 alpha
+                    // 同步退到 0，不会 alpha 没了位移还在。
                     + "    float hw2 = max(halfW, 0.5);\n"
-                    + "    float capY = bottomY - min(max(botR, 1.0), viewSize.x * 0.5);\n"
+                    + "    float capY = topY;\n"
                     + "    float capL = sh * halfW;\n"
                     + "    float2 dl = float2(max(abs(p.x - capL) - hw2, 0.0),\n"
                     + "                        max(p.y - capY, 0.0));\n"
@@ -310,6 +301,27 @@ final class LockGlassStrip extends View {
                     + "    float endFade = smoothstep(0.0, hw2 * 2.0,\n"
                     + "                              min(length(dl), length(dr)));\n"
                     + "    aEdge = aEdge * endFade;\n"
+                    // glassedge2 入场淡入：手指一动，两侧不再「整根冒出」（实测原话
+                    // 「一动就整根冒出太割裂」）。侧柱 alpha 在手势前 15% 行程里从 0 平滑
+                    // 爬到 1；底边那条恒定满值、一动就在（原拍板不动），圆角主体也照旧
+                    // 即出 —— sideM 只有贴近屏幕沿的末段才读满，转角处淡入与常亮之间
+                    // 按法线方向平滑过渡，接缝处不会出现 alpha 台阶。
+                    //
+                    // prog 从 topY 反推：topY = -位移 = -0.96·g·屏高（钉顶补满屏高时
+                    // 被 clamp 进 1）—— 不新增第 17 个 uniform，第 8 节「16 对 16」断言
+                    // 原样成立。0.96 是 MAX_SHIFT_RATIO 的镜像；它将来若改，这里只是
+                    // 淡入曲线平移，clamp 保证不溢出。
+                    //
+                    // sideM = |∂d/∂x| 由 sdShell 左右各 8px 的中心差分得到（真 SDF，
+                    // 差分 ∈ [0,16]）：底边直段对 x 不敏感 → 0 → 完全不受影响；侧边直段
+                    // 法线朝 x → 16 读满；圆角按法线 x 分量平滑爬升。sideIn 只乘进
+                    // aEdge → dFade = aEdge² 跟着走，折射/模糊与 alpha 同涨同消，
+                    // 位移不会在不可见时还活着。反向拖回时同一条曲线淡出，
+                    // 回到静止也不会再有「啪」的一下。
+                    + "    float prog = clamp(-topY / max(viewSize.y * 0.96, 1.0), 0.0, 1.0);\n"
+                    + "    float sideM = smoothstep(10.0, 15.0, abs(sdShell(p + float2(8.0, 0.0)) - sdShell(p - float2(8.0, 0.0))));\n"
+                    + "    float sideIn = 1.0 - sideM * (1.0 - smoothstep(0.0, 0.15, prog));\n"
+                    + "    aEdge = aEdge * sideIn;\n"
                     + "    float dFade = aEdge * aEdge;\n"
                     + "\n"
                     // LOCKRIMVIEW DIM SYNC. The black scrim LockRimView paints lives one
@@ -702,12 +714,12 @@ final class LockGlassStrip extends View {
                     // the band has no visible edge. The arc side keeps its tight knee.
                     // Placed before endFade/dFade so the displacement tapers with alpha.
                     + "    aEdge = min(aEdge, smoothstep(-1.0, 0.0, u));\n"
-                    // Same cap taper as the full version: strokeCenter's centreline is an
-                    // open path, so getFillPath butts it off with a horizontal cut at
-                    // y = bottomY - botR at both screen edges. endFade is 0 on that cut,
-                    // so the band eases to nothing there instead of showing a step.
+                    // Same cap taper as the full version. glassedge1: the U path's butt
+                    // caps sit at the shape top (topY <= 0, off-screen), so endFade
+                    // measures against capY = topY and is ~1 across the visible screen;
+                    // the corner cut it used to guard no longer exists.
                     + "    float hw2 = max(halfW, 0.5);\n"
-                    + "    float capY = bottomY - min(max(botR, 1.0), viewSize.x * 0.5);\n"
+                    + "    float capY = topY;\n"
                     + "    float capL = sh * halfW;\n"
                     + "    float2 dl = float2(max(abs(p.x - capL) - hw2, 0.0),\n"
                     + "                        max(p.y - capY, 0.0));\n"
@@ -716,6 +728,15 @@ final class LockGlassStrip extends View {
                     + "    float endFade = smoothstep(0.0, hw2 * 2.0,\n"
                     + "                              min(length(dl), length(dr)));\n"
                     + "    aEdge = aEdge * endFade;\n"
+                    // glassedge2: same side-entrance fade as the full version - the side
+                    // columns ramp alpha over the first 15% of travel (prog reconstructed
+                    // from topY, no new uniform); sideM is the x central difference of
+                    // sdShell, so the bottom band and the corner body read 0 there and
+                    // stay instant-on exactly as before.
+                    + "    float prog = clamp(-topY / max(viewSize.y * 0.96, 1.0), 0.0, 1.0);\n"
+                    + "    float sideM = smoothstep(10.0, 15.0, abs(sdShell(p + float2(8.0, 0.0)) - sdShell(p - float2(8.0, 0.0))));\n"
+                    + "    float sideIn = 1.0 - sideM * (1.0 - smoothstep(0.0, 0.15, prog));\n"
+                    + "    aEdge = aEdge * sideIn;\n"
                     + "    float dFade = aEdge * aEdge;\n"
                     // Hard step at the shell edge, same as the full version. The band lives
                     // entirely on the dim side of the shell, so this is simply LockRimView's
@@ -802,6 +823,26 @@ final class LockGlassStrip extends View {
     private boolean loading;
     private long lastAttempt;
     private long lastIdCheck;
+    /**
+     * 取图树根（条子的窗口根）：组纹理时给 artOf 找系统媒体卡缩略图用，每次扫描
+     * 刷新。与 HMC 在不在无关 —— 在场与否由 {@link MediaCover#hmcAlive}（应答）
+     * 说了算，树摘 ≠ 背景回（frostglass4 实测教训）。
+     */
+    private volatile View mediaRoot;
+    /** 会话监听已挂。 */
+    private boolean mediaWatched;
+    /** 上次打过诊断日志的扫描位（scanMedia 只在变化时打，稳态零日志）。 */
+    private int lastScan = Integer.MIN_VALUE;
+    /** 歌词页纹理：与 wallpaper 并存的第二份（36px 宽磨砂），歌词页门槛换用它。 */
+    private volatile Bitmap frosted;
+    /** 封面页纹理：composeWallpaper 同配方的半幅合成，封面页门槛换用它。 */
+    private volatile Bitmap coverTx;
+    /** 两份音乐纹理在组（一趟线程共用一旗，换曲时双位一起到齐）。 */
+    private boolean loadingMusic;
+    /** shader 当前挂的是哪张位图（applyTexture 幂等判据，避免重复重挂）。 */
+    private Bitmap lastInput;
+    /** 手势进行中：树走查只在起手沿做一次，帧内不重复。 */
+    private boolean gestureActive;
 
     private LockGlass.Shape shell;
     private boolean enabled;
@@ -913,9 +954,10 @@ final class LockGlassStrip extends View {
      * 取值 1..40dp，缺省 20dp，入参越界一律钳进这个区间。
      *
      * <p>只改<b>玻璃自己的带宽</b> —— 白描边仍由 {@link LockRimView#configure} 按
-     * 「描边宽度」画，两者互不影响，玻璃可比白线宽也可比白线窄。中心线默认始终是
-     * {@link LockGlass#bottomPath} 那一条（开压暗时沿法线<b>朝弧线上方</b>挪开半条带宽，
-     * 见 {@link #strokeCenter}），不产生第二条手绘曲线。
+     * 「描边宽度」画，两者互不影响，玻璃可比白线宽也可比白线窄。中心线是 glassedge1
+     * 起的那条 U（左右直边 + 底边，见 {@link #strokeCenter}）：这一项决定 U 带子的
+     * 宽度 —— 屏幕两边从沿口往内铺多宽、底弧那条带多厚，全由它一个值定，
+     * 不产生第二条手绘曲线。
      *
      * <p>40dp 这个上限来自几何：开压暗时中心线半径 = botR - halfW，带内圈半径 =
      * botR - glassPx，botR 约 300px，再粗内圈就归零、圆角自交。
@@ -974,6 +1016,15 @@ final class LockGlassStrip extends View {
                 invalidate();
             }
         }
+        if (!gestureActive) {
+            gestureActive = true;
+            // frostglass5：起手沿扫一次树（诊断 + 在场旁证），无条件问一次 HMC 页面
+            // （op lyricstate 只读查询）—— 不再被树探到与否拦住，应答才是页面/封面
+            // 模式与在场的来源。应答毫秒级到（实测 75ms）、玻璃还没显形，答到即重挂
+            // （applyTexture 幂等 + onPageAnswer 补组），切页闪不出来
+            scanMedia();
+            MediaCover.queryPage(getContext(), this::onPageAnswer);
+        }
         if (enabled) {
             pollWallpaper();
         }
@@ -982,6 +1033,7 @@ final class LockGlassStrip extends View {
 
     /** 手势结束 / 联动关闭：收掉外壳。 */
     void clear() {
+        gestureActive = false;
         if (shell == null) {
             return;
         }
@@ -996,6 +1048,16 @@ final class LockGlassStrip extends View {
         if (enabled) {
             ensureWallpaper(false);
         }
+        // frostglass3：换曲/换会话 → onCoverChanged（重组纹理），播/停 → onSessionChanged
+        // （只重扫换门槛）；条子装上这一刻先扫一次 —— 第一次触屏门槛就绪，不用现组。
+        // frostglass5：装上就无条件问一次页面（重锁后树里 HMC 的 View 常不在 ——
+        // found=0 期间唯一能把「未知」消掉的就是这条应答）
+        if (!mediaWatched) {
+            mediaWatched = true;
+            MediaCover.watch(getContext(), this::onCoverChanged, this::onSessionChanged);
+        }
+        scanMedia();
+        MediaCover.queryPage(getContext(), this::onPageAnswer);
     }
 
     // ------------------------------------------------------------------ 背景纹理
@@ -1034,6 +1096,194 @@ final class LockGlassStrip extends View {
         } catch (Throwable ignored) {
             // 查不到 id 就不查了，纹理该在还在
         }
+        // frostglass1 起：诊断位的探测搭 RECHECK_MS 的便车（每 4s 至多扫一次树，
+        // 主线程）。即时性靠手势起手那次扫描（见 update），这里只是兜底。
+        // frostglass5：扫描不再降任何门槛（found=0 只是诊断）—— 在场只由应答
+        // 证明（MediaCover.hmcAlive），树摘 ≠ 背景回
+        scanMedia();
+    }
+
+    /**
+     * 媒体背景扫描（主线程，整树一次走查）。frostglass5 —— **树只做诊断与旁证，
+     * 在场与页面全听应答的**：
+     * <ul>
+     *   <li><b>在场</b> = {@link MediaCover#hmcAlive}（应答到过 / 树见过，一次性）：
+     *       树摘 ≠ 背景回 —— 专辑背景顶替在壁纸进程里，HMC 的 View 挂摘（重锁后
+     *       不回来、上滑中途被摘、切页离树）与它无关。frostglass4 实测 51.289 后
+     *       树恒 0、起手沿一降级玻璃掉回壁纸文件 —— 用户看到的「还是壁纸」就是
+     *       拿树当在场的下场，found=0 从此不降任何东西；</li>
+     *   <li><b>纹理</b>按页分（应答的 shown=）：歌词页磨砂 / 封面页 composeWallpaper
+     *       合成，未知落磨砂兑底，两份互为兜底 —— 同专辑的色韵永远比退回毫不相干
+     *       的壁纸文件贴近屏幕，两份全无才回文件；</li>
+     *   <li><b>预热</b>：树里首次见到（found 0→1）踢一炉纹理，首划不现组；</li>
+     *   <li><b>诊断</b>：结果一变打一行（found 位 + 页面 + 会话 + 树里实际有哪些
+     *       HMC 视图、显不显），稳态零日志。</li>
+     * </ul>
+     * 调用点四处：条子装上、手势起手沿、4s 轮询兜底、媒体事件。
+     */
+    private void scanMedia() {
+        View root = getRootView();
+        mediaRoot = root;
+        int prev = lastScan;
+        int found = MediaCover.scan(root);
+        if (found != lastScan) {
+            // 诊断（只在结果变化时打）：位 + 页面 + 会话门槛 + 树里实际有哪些 HMC 视图、显不显
+            lastScan = found;
+            ModuleLog.d("glass: 媒体扫描 found=" + found
+                    + " active=" + MediaCover.sessionActive()
+                    + " page=" + MediaCover.pageName(MediaCover.page())
+                    + " 见=[" + MediaCover.hmcDump(root) + "]");
+        }
+        if ((found & MediaCover.HMC_ANY) != 0) {
+            MediaCover.noteHmc();   // 树见到 = 在场旁证（应答还没来过时的缓冲，一次性）
+            if ((prev & MediaCover.HMC_ANY) == 0) {
+                kickMusic("在场预热");   // 首见就备纹理，首划不现组
+            }
+        }
+        applyTexture();
+    }
+
+    /**
+     * 换曲/换会话（主线程）：重扫诊断，按新封面一次重组两份纹理，再问一次页面
+     * —— 换歌可能换页（没歌词的歌会把用户留在封面页），这问一次比等到上滑再问
+     * 早半拍，缓存里到手势时已是鲜的。三步都不再看树（frostglass5）。
+     */
+    private void onCoverChanged() {
+        scanMedia();
+        kickMusic("换曲");
+        MediaCover.queryPage(getContext(), this::onPageAnswer);
+    }
+
+    /** 播/停（主线程）：只重扫换门槛纹理 —— 还是同一张专辑，两份纹理绝不重组。 */
+    private void onSessionChanged() {
+        scanMedia();
+    }
+
+    /**
+     * 页面应答到达（主线程）：该页那份纹理还没组出来就现补一炉（应答本身证明
+     * HMC 活着，纹理没理由缺席），再重挂纹理换采样源。
+     */
+    private void onPageAnswer() {
+        if (frosted == null || coverTx == null) {
+            kickMusic("应答补组");   // loadingMusic 旗防重入，每答至多一炉
+        }
+        applyTexture();
+    }
+
+    /**
+     * 组两份音乐纹理（后台线程，组好回主线程挂）。与壁纸解码互不阻塞也互不短路 ——
+     * 纹理是三份、按门槛各用各的。一趟线程共取一次封面（链路里最贵的一步只走一遍），
+     * 歌词磨砂先组（frostglass3 已验）、封面合成后组（frostglass4 新增），各自独立
+     * 失败（Tex 里那份给 null，另一份照给）。用树根量尺寸（条子装上那一刻树根就有
+     * 全窗口尺寸，条子自己可能还没过布局）；还没尺寸就不起线程，下个起手/轮询/事件
+     * 会再叫。why 只进日志（在场预热 / 换曲），排查时一眼看出这次是谁踢的。
+     */
+    private void kickMusic(String why) {
+        if (loadingMusic) {
+            return;
+        }
+        final View anchor = mediaRoot;
+        final int w = anchor != null ? anchor.getWidth() : getWidth();
+        final int h = anchor != null ? anchor.getHeight() : getHeight();
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+        loadingMusic = true;
+        new Thread(() -> {
+            MediaCover.Tex t = MediaCover.compose(getContext(), anchor, w, h);
+            post(() -> onMusicReady(t, why));
+        }, "LockBar-musicTex").start();
+    }
+
+    private void onMusicReady(MediaCover.Tex t, String why) {
+        loadingMusic = false;
+        boolean got = false;
+        if (t != null) {
+            if (t.frosted != null) {
+                frosted = t.frosted;
+                got = true;
+                ModuleLog.d("glass: 歌词磨砂纹理就绪（" + why + "，frostedFor 配方） "
+                        + t.frosted.getWidth() + "x" + t.frosted.getHeight());
+            }
+            if (t.cover != null) {
+                coverTx = t.cover;
+                got = true;
+                ModuleLog.d("glass: 封面壁纸纹理就绪（" + why + "，composeWallpaper 配方） "
+                        + t.cover.getWidth() + "x" + t.cover.getHeight());
+            }
+        }
+        if (!got) {
+            // 重组失败时不冲掉已有的：旧封面的颜色也比退回原壁纸贴近屏幕
+            ModuleLog.d("glass: 音乐纹理组不出来（" + why + "），沿用已有纹理");
+        }
+        applyTexture();
+    }
+
+    /**
+     * 当前该采的那份纹理。音乐门槛（HMC 活着 + 会话活 + 它的封面模式开）落空 →
+     * 壁纸文件；在门槛里按页面取（frostglass4）：封面页给 composeWallpaper 合成、
+     * 歌词页给磨砂、页面未知（应答没到 / 被拒）给磨砂兑底 —— 该页那份没组好时
+     * 另一份互为兜底（同专辑色，总比退回海水强），两份全无才回壁纸文件。
+     * frostglass5：在场第一位换成 {@link MediaCover#hmcAlive}（应答证明）——
+     * 树摘 ≠ 背景回，绝不更糟的链条在这里收口。
+     */
+    private Bitmap activeTexture() {
+        if (!MediaCover.hmcAlive() || !MediaCover.sessionActive()
+                || !MediaCover.coverModeOn()) {
+            return wallpaper;
+        }
+        int page = MediaCover.page();
+        if (page == MediaCover.PAGE_COVER && coverTx != null) {
+            return coverTx;
+        }
+        if (page == MediaCover.PAGE_LYRICS && frosted != null) {
+            return frosted;
+        }
+        return frosted != null ? frosted : (coverTx != null ? coverTx : wallpaper);
+    }
+
+    /**
+     * 按当前门槛选采样源挂进 shader —— {@link #activeTexture} 的整条链（音乐在场
+     * 按页取纹理，其余壁纸文件）。幂等：同一位图不重挂；shader 没编出 / 还没纹理
+     * 就不动，onDraw 的门还在，绝不会去采空。它也是页面应答回来后的重挂点
+     * （queryPage 的 onPageAnswer），页面一翻、位图一换，下帧即换采样。
+     * 换源时打一行（谁→谁 + 四个门槛位），纹理之争从此一行日志定案。
+     */
+    private void applyTexture() {
+        Bitmap use = activeTexture();
+        if (shader == null || use == null || use == lastInput) {
+            return;
+        }
+        String from = srcName(lastInput);
+        lastInput = use;
+        // 纹理是 Shader 的**输入**，glassPaint 上挂的始终是 RuntimeShader，不能被覆盖
+        shader.setInputShader("wallpaper", makeTileShader(use));
+        invalidate();
+        String to = srcName(use);
+        if (!to.equals(from)) {
+            ModuleLog.d("glass: 采样 " + from + "→" + to
+                    + "（page=" + MediaCover.pageName(MediaCover.page())
+                    + " alive=" + MediaCover.hmcAlive()
+                    + " active=" + MediaCover.sessionActive()
+                    + " cover=" + MediaCover.coverModeOn() + "）");
+        }
+    }
+
+    /** 纹理名（只进日志）。 */
+    private String srcName(Bitmap b) {
+        if (b == null) {
+            return "无";
+        }
+        if (b == wallpaper) {
+            return "壁纸";
+        }
+        if (b == frosted) {
+            return "磨砂";
+        }
+        if (b == coverTx) {
+            return "封面";
+        }
+        return "旧";   // 已被换下的上一份（诊断用，正常路径不出现）
     }
 
     /**
@@ -1059,9 +1309,12 @@ final class LockGlassStrip extends View {
         new Thread(this::loadWallpaper, "LockBar-wallpaper").start();
     }
 
-    /** 上滑模糊盖层取位图：与玻璃纹理同一份解码、同一份引用（release 只丢引用不回收）。 */
+    /**
+     * 上滑模糊盖层取位图：与玻璃同一份采样源（{@link #activeTexture} —— 音乐门槛内
+     * 按页取纹理，其余 = 壁纸文件）、同一份引用（release 只丢引用不回收）。
+     */
     Bitmap wallpaperBitmap() {
-        return wallpaper;
+        return activeTexture();
     }
 
     private void releaseWallpaper() {
@@ -1144,12 +1397,9 @@ final class LockGlassStrip extends View {
         }
         wallpaper = bmp;
         wallpaperId = id;
-        // 纹理是 Shader 的**输入**，glassPaint 上挂的始终是 RuntimeShader，不能被覆盖
-        if (shader != null) {
-            shader.setInputShader("wallpaper", makeTileShader(bmp));
-        }
+        // 壁纸那份换新了；挂哪份由门槛说了算（音乐在场仍挂磨砂，applyTexture 幂等）
+        applyTexture();
         ModuleLog.d("glass: 壁纸纹理就绪 " + bmp.getWidth() + "x" + bmp.getHeight());
-        invalidate();
     }
 
     /** 中心裁切铺满窗口 —— 与系统壁纸窗口同一套 center-crop，保证与真实背景对齐。 */
@@ -1240,30 +1490,26 @@ final class LockGlassStrip extends View {
     }
 
     /**
-     * 玻璃带的<b>中心线</b>。描边模式（dimS=0）下与 {@link LockGlass#bottomPath} 逐点相同；
-     * 开压暗时整条沿法线<b>朝弧线上方</b>挪开半条带宽。
+     * 玻璃带的<b>中心线</b>，glassedge1 起是一条 U：屏幕左沿直边 → 左圆角 → 底部直段 →
+     * 右圆角 → 屏幕右沿直边。描边模式（dimS=0）下底段与 {@link LockGlass#bottomPath}
+     * 逐点相同；开压暗时整条沿法线<b>朝壳内</b>挪开半条带宽（两侧直边因此内缩到
+     * {@code x = halfW}，带子在屏幕上正好铺满 [0, 玻璃厚度] 整段）。
      *
-     * <p><b>两种压暗方向几何完全一样</b>：玻璃永远坐在<b>弧线上方的那条 84px 环带</b>里
-     * （半径 {@code [R-2h, R]}，外侧脸正好压在弧线上）—— 压下面时它在亮的那半边，
-     * 压上面时它在被压暗那一半的<b>底边</b>（需求原文：「放到压暗的底部」）。
-     * {@code dimUpper} 因此<b>不进几何</b>，它只通过 AGSL 的 {@code dimMode} 决定这块玻璃
-     * 的 {@code dimF} 是 1 还是 {@code 1 - dimS*riseS}，也就是背景压不压。
-     * 带子两侧的背景在两种模式下都与带内一致，端帽上下也同侧，所以不会因为换方向而多出断层。
+     * <p><b>两种压暗方向几何完全一样</b>：玻璃永远坐在<b>壳内那条环带</b>里
+     * （底段半径 {@code [R-2h, R]}，外侧脸正好压在弧线上；两侧直边同理压在屏幕沿上）——
+     * {@code dimUpper} 因此<b>不进几何</b>，它只通过 AGSL 的 {@code dimMode} 决定
+     * 这块玻璃的 {@code dimF}。上下部压暗/模糊的分界与强度一概不因两侧玻璃改变。
      *
-     * <p><b>为什么是法线偏移而不是整体平移</b>：弧线两端是竖着贴屏幕边缘的（切线竖直、
-     * 法线水平），上下平移在那里等于是沿弧线方向滑动，带子会继续骑在分界线上、挪了个寂寞。
-     * 这里用同心圆弧解析构造 —— 圆角半径取 {@code bottomRadius - halfW}，直段跟着圆角走，
-     * 端点落在 {@code (halfW, bottom-radius)} / {@code (w - halfW, bottom-radius)}，
-     * 与 shader 里 {@code capL = sh * halfW}、{@code capY = bottomY - botR} 逐一对应：
-     * <pre>
-     *   开压暗 rIn = R - halfW：中心线在弧线上方 halfW，带子下半张脸正好落在弧线上
-     *   不开   rIn = R       ：与 LockGlass.bottomPath 完全一致
-     * </pre>
+     * <p><b>两端端帽收在屏外</b>：直段起点是 {@code shell.top = edge - 屏高 ≤ 0}，
+     * 左右两个 BUTT 端帽都画在屏幕上方看不见的地方 —— 底边原来那两处圆角切点硬切
+     * （连带 endFade 渐隐）随 U 形一起消失，转角处玻璃连续无断口（「边缘全是玻璃」）。
      *
-     * <p><b>与 shader 侧必须同向</b>：AGSL 里 {@code sh = min(max(dimS*100,0),1)}，
-     * 带子偏移后 {@code d} 从 {@code -2h} 走到 {@code 0}、中心在 {@code -h}，
-     * {@code sh = 1} 把 {@code u} 重新以带中心为 0 —— 两边由同一个布尔驱动，
-     * 不会出现带子挪了、{@code u} 没挪（或反过来）的错位。
+     * <p><b>与 shader 侧必须同向</b>：AGSL 里 {@code sh = min(max(dimS*100,0),1)}、
+     * {@code capL = sh*halfW} —— 侧边中心线 {@code sideX = rr - rIn} 与它们由<b>同一个
+     * shifted() 门</b>驱动（压暗 = halfW / 描边 = 0），两边永远不会各算各的。
+     *
+     * @see #strokeCenter 里 sideX 与圆角起点同 x：圆角在 180°/0° 处切线竖直，
+     *     直线接上去无台阶，getFillPath 得到的是一整条连续带。
      */
     private void strokeCenter(Path p, int w, float halfW) {
         p.reset();
@@ -1280,7 +1526,7 @@ final class LockGlassStrip extends View {
         float hw = Math.max(halfW, 1f);
         float rIn = rr;
         if (shifted()) {
-            // 恒定朝弧线上方（壳内）—— 与 dimUpper 无关，压下面、压上面都一样
+            // 恒定朝壳内 —— 与 dimUpper 无关，压下面、压上面都一样
             rIn = rr - hw;
         }
         if (rIn < 1f) {
@@ -1288,19 +1534,23 @@ final class LockGlassStrip extends View {
         }
         float cy = bottom - rr;          // 圆角圆心 y（与 bottomPath 用的是同一个圆心）
         float lineY = cy + rIn;          // 直段 y = 圆心 + 新半径
-        p.moveTo(rr - rIn, cy);
+        float top = shell.top;           // 形状顶：edge - 屏高，永远 ≤ 0，端帽在屏外收口
+        float sideX = rr - rIn;          // 与圆角起点同 x：压暗=halfW / 描边=0，切线连续
+        p.moveTo(sideX, top);
+        p.lineTo(sideX, cy);
         p.arcTo(new RectF(rr - rIn, cy - rIn, rr + rIn, cy + rIn), 180f, -90f);
         p.lineTo(w - rr, lineY);
         p.arcTo(new RectF(w - rr - rIn, cy - rIn, w - rr + rIn, cy + rIn), 90f, -90f);
+        p.lineTo(w - sideX, top);
     }
 
     /**
      * 重建渲染区域：{@code band} = 玻璃带的真实轮廓。
      *
-     * <p>中心线由 {@link #strokeCenter} 生成 —— 描边模式下就是 {@link LockGlass#bottomPath}
-     * 那一条（与 LockRimView 同方法、同 Shape、同 cap/join），玻璃和弧线完全重合；
-     * 开压暗时整条沿法线<b>朝弧线上方</b>挪开半条带宽，两种压暗方向几何相同。
-     * 宽度与 cap/join 照抄，不是手绘的第二条曲线。
+     * <p>中心线由 {@link #strokeCenter} 生成 —— glassedge1 起是一条 U：屏幕左沿直边 →
+     * 左圆角 → 底部直段（描边模式下与 {@link LockGlass#bottomPath} 逐点相同）→ 右圆角 →
+     * 右沿直边，端帽收在屏外。开压暗时整条沿法线<b>朝壳内</b>挪开半条带宽，两种压暗
+     * 方向几何相同。宽度与 cap/join 照抄，不是手绘的第二条曲线。
      */
     private void rebuild() {
         band.reset();
@@ -1410,9 +1660,8 @@ final class LockGlassStrip extends View {
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
-        if (wallpaper != null && shader != null) {
-            shader.setInputShader("wallpaper", makeTileShader(wallpaper));
-        }
+        lastInput = null;   // 尺寸变了 tile 矩阵要重算，强制重挂当前这份
+        applyTexture();
         rebuild();
     }
 

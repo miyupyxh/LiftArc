@@ -47,14 +47,6 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     /** 松手回弹时长（与 HyperBetter 的 smoothstep 回弹一致）。 */
     private static final long RETURN_MS = 240L;
     /**
-     * 解锁兜底检查的宽限：动画<b>结束后</b>再等这么久，才回头看内容有没有被接管。
-     *
-     * <p>必须是「时长 + 宽限」而不是一个固定值 —— 时长现在是可调的（150..800ms，
-     * 来自 {@code config.unlockMs}），兜底若写死 700ms，用户把时长拉到 800 就会在
-     * 条还在飞的半路上把它拽回去，那一下反而比不做兜底还难看。
-     */
-    private static final long UNLOCK_GRACE_MS = 400L;
-    /**
      * 小白条触控区高度（dp）。条本体只有 5dp、离底 7.5dp，
      * 触控区给到 36dp：条下方 7.5dp、上方 23dp、左右各 16dp，远超“条周围 5dp”。
      */
@@ -176,8 +168,23 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
     private float radiusCache;
     private ValueAnimator animator;
-    /** 解锁那一下的延时兜底；非空 = 有一道还没跑的检查，见 {@link #armUnlockGuard()}。 */
-    private Runnable unlockGuard;
+    /**
+     * 解锁收尾中标记：内容钉在屏幕顶上，<b>不让 {@link #sync()} 把它归零</b>。
+     *
+     * <p>1.0.22 反馈「框不会随手势上去，而是下来了再进桌面」的病因就是归零归早了：
+     * keyguardDone 之后锁屏还要淡出几百毫秒，这几帧里 {@code sync()} 走到
+     * {@code !onKeyguard} 分支 {@code reset()}，{@code apply(0f)} 把内容从 -0.96×屏高
+     * 当帧拽回原位 —— 用户看到的就是内容/弧框往下掉、桌面才慢半拍透出来。
+     *
+     * <p>复位点：锁屏视图真的不再 shown（{@link #sync()}，归零已看不见）、
+     * 新一次手势（{@link #onDragStart}，手指接管 progress）。{@link #reset()} 里也顺手清，
+     * 保证任何归位路径都不会把标记漏到下一锁屏周期。
+     *
+     * <p>keepup2 起成败一律置位：show() 被拒最常见的原因是人脸/指纹抢先、系统已在
+     * 退场，此时回弹必然和退场撞车（「掉下来才进桌面」第二股）。真没解锁时手指
+     * 往下一拖就跟随回来，或下次息屏亮屏由 {@link #sync()} 自动归零。
+     */
+    private boolean unlocking;
 
     // ---------------------------------------------------------------- 触摸拦截
     /** 本次手势的落点（窗口坐标）。 */
@@ -679,6 +686,9 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         // 玻璃条压在描边/压暗之上（玻璃是材质，不该被一层黑纱盖掉），但在小白条之下（触控优先）。
         // 黑纱在玻璃下面 = 带外的壁纸已经变暗、带内取的却是原图，所以 shader 里要按
         // 同一条弧线把压暗同步补上（setRim 后两项），否则玻璃与压暗背景之间是硬割裂。
+        // underlay1：这里先挂进 overlay，随后 resolve() 找到锁屏内容层时会把 strip
+        // 迁到内容之下（placeStripUnderContent）—— 玻璃不再盖住通知/时钟；rim、
+        // 小白条、提示字这三件留在 overlay 照旧压顶。
         strip = new LockGlassStrip(ctx);
         // 描边参数必须与上面 rim.configure 的五项同源：画在哪 / 多宽 / 要不要画 / 压哪半 / 压多深
         strip.setRim(config.arcWidth, config.arcAlpha, config.arcDim,
@@ -1133,8 +1143,18 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
         if (!onKeyguard) {
             if (progress != 0f) {
+                // 解锁收尾（unlocking）：锁屏还挂在屏上（keyguardDone 之后的淡出窗口），
+                // 此刻归零会把内容和弧框当着用户面拽回底部、桌面才慢半拍透出来 ——
+                // 1.0.22 反馈的「框不上去了，下来再进桌面」就是这一下。钉在顶上等锁屏
+                // 视图真的不再 shown，那时归零已经看不见；卡住不走交给手指（往下一拖
+                // 就跟随回来），下次息屏亮屏也会经这里自动归零。
+                if (unlocking && keyguardRoot != null && keyguardRoot.isAttachedToWindow()
+                        && keyguardRoot.isShown()) {
+                    return;
+                }
                 reset();
             } else {
+                unlocking = false;
                 clearLift();
             }
             return;
@@ -1198,6 +1218,77 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             lastApplied = Float.NaN;
         }
         bouncer = box;
+        placeStripUnderContent();
+    }
+
+    /**
+     * 玻璃条沉到锁屏内容之下（underlay1，实测拍板：「避开锁屏的通知和时钟，在这俩的
+     * 下面放玻璃，不让玻璃覆盖在这俩上面」）。
+     *
+     * <p>做法：把 {@code strip} 从 {@code overlay}（window 的最后一个子 View，压在一切
+     * 内容之上）里摘出来，直接插到锁屏内容层的正下方 —— 锚点取 {@code keyguard_root_view}
+     * （时钟、充电动效、解锁提示都在它的子树里）与 {@code shared_notification_container}
+     * （锁屏通知列表，蓝图里在 root 之上）中<b>更靠下的那个</b>。描边/黑纱（rim）、
+     * 小白条、提示字仍在 overlay 里照旧压顶；壁纸盖层（cover）垫底不动。
+     *
+     * <p>玻璃取样的是自解码的壁纸位图、不是窗口内容，所以沉底只改<b>遮挡关系</b> ——
+     * 材质、光学、透明度一个像素不变；锁屏背景是透的，内容不画的地方照样透出玻璃。
+     *
+     * <p>幂等 + 自愈：已在锚点之下就什么都不做；root 换人（面板重建）时 resolve() 会
+     * 再跑一遍本方法，自动迁到新 root 底下。{@code find()} 是递归 findViewById，锚点
+     * 未必是直属子 View，故沿父链爬到直属层再取 index。一个锚点都找不到（奇葩 ROM 把
+     * root 埋深、或压根不在 window 树里）就留在原位 —— 退回老的「压顶」挂法，与历史
+     * 版本表现一致，不会更糟。
+     *
+     * <p>已知交互：压暗方向开「上面」且玻璃同开时，黑纱（在 overlay、比沉底的玻璃高）
+     * 会多压玻璃一层；默认的「下面」方向黑纱区与玻璃带不重叠，不受影响。
+     */
+    private void placeStripUnderContent() {
+        if (window == null || strip == null || keyguardRoot == null) {
+            return;
+        }
+        try {
+            int idx = Integer.MAX_VALUE;
+            View[] cands = {keyguardRoot, sharedNotif};
+            for (View cand : cands) {
+                if (cand == null) {
+                    continue;
+                }
+                View anchor = cand;
+                android.view.ViewParent p = anchor.getParent();
+                while (p != null && p != window) {
+                    if (!(p instanceof View)) {
+                        anchor = null;
+                        break;
+                    }
+                    anchor = (View) p;
+                    p = anchor.getParent();
+                }
+                if (p != window || anchor == null) {
+                    continue;
+                }
+                int i = window.indexOfChild(anchor);
+                if (i >= 0 && i < idx) {
+                    idx = i;
+                }
+            }
+            if (idx == Integer.MAX_VALUE) {
+                return;   // 一个锚点都没找到：留在 overlay 里（老挂法）
+            }
+            android.view.ViewParent sp = strip.getParent();
+            if (sp == window) {
+                int cur = window.indexOfChild(strip);
+                if (cur >= 0 && cur < idx) {
+                    return;   // 已经在内容之下
+                }
+                window.removeView(strip);
+            } else if (sp instanceof ViewGroup) {
+                ((ViewGroup) sp).removeView(strip);
+            }
+            window.addView(strip, idx, matchParent());
+        } catch (Throwable ignored) {
+            // 迁移是纯视觉优化：失败就保持 overlay 里的老位置，功能不受影响
+        }
     }
 
     private static void detachTarget(View v, LockGlass.Clip clip) {
@@ -1582,6 +1673,13 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             // 行程（rangePx）已按 followMul 缩放，这里对进度保持线性，
             // d(位移)/d(手指) 恒等于 followMul：dragRatio=1 时恰好 1:1 贴手。
             shift = h * MAX_SHIFT_RATIO * g;
+            // keepup3 钉顶收尾：钉住时（解锁已拉起、锁屏视图还要挂 0.1~1s 才真正消失）
+            // 补满到整屏高 —— 手势行程故意只给 0.96 屏高（弧线要留可见余量），但钉住后
+            // 那 4% 里塞着通知底边/手电筒相机按钮，实测就是「最后一块卡在屏幕最上方」。
+            // 补满后内容在动画收尾时已整块出屏，钉多久都不可见；拖回时 g<1 照旧。
+            if (unlocking && g >= 1f) {
+                shift = h;
+            }
         }
         // edge = 窗口坐标下的“可见底边”，-shift 时内容整体上移
         float edge = h - shift;
@@ -1596,6 +1694,15 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         // 小白条贴着可见底边一起上升（触控区跟着走，手指不用重新找位置）
         setTranslation(handle, -shift);
         setTranslation(hint, -shift);
+        // keepup3 钉顶收尾：内容已补满整屏高出屏（位移在上面算好），顶上不该再留任何
+        // 自己画的东西 —— 弧壳/玻璃带画在 edge=h-shift=0 附近，钉住期间会在顶上留一条
+        // 残带；背景糊此刻也该撤（restoreBlurAll 在 finishUnlock 已撤，这里防配置变更
+        // 路径再把糊盖回来）。clear 全幂等；真没解锁、手指拖回时 g<1 自动重挂全套。
+        if (unlocking && g >= 1f) {
+            clearClips();
+            restoreBlurAll();
+            return;
+        }
         // 背景模糊与位移同一节拍：半径没变时这行是空操作（稳态滑动零分配）
         applySwipeBlur(g);
 
@@ -1777,7 +1884,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
     private void reset() {
         cancelAnimator();
-        clearUnlockGuard();
+        unlocking = false;
         clearLift();
         progress = 0f;
         startProgress = 0f;
@@ -1825,7 +1932,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     @Override
     public void onDragStart(float y) {
         cancelAnimator();
-        clearUnlockGuard();
+        unlocking = false;
         startProgress = progress;
         lastTickBucket = bucket(progress);
         viewsDumped = false;
@@ -2048,9 +2155,11 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
      * 全部原因。仿 iOS 应该是：条继续往上飞出屏幕，屏幕空一下，解锁界面才进来。
      *
      * <p>送到位后停在 {@code progress = 1}（内容上移 0.96×屏高，条和弧线都到顶）<b>不回弹</b>：
-     * 解锁界面接管时 {@link #sync()} 会在下一次全局布局里把覆盖层置 GONE 并归零 ——
-     * bouncer 显隐、keyguard 状态变化都会走那条 {@code OnGlobalLayoutListener}。
-     * 只有 show() 明确失败才退回原来的回弹；另有一道延时兜底 {@link #armUnlockGuard()}。
+     * 解锁界面接管时 {@link #sync()} 会在下一次全局布局里把覆盖层置 GONE；内容的归零则
+     * 推迟到锁屏视图真的消失（{@code unlocking} 钉顶，见 {@link #sync()}）—— 淡出窗口里
+     * 归零会把内容当着用户面拽回底部才进桌面（1.0.22 反馈的那股）。
+     * keepup2 起 show() 明确失败也<b>不回弹</b>：被拒的最常见原因是人脸/指纹抢先、
+     * 系统已在退场，回弹必然撞车（反馈里的第二股下落）；真没解锁时手指拖回即可。
      *
      * <p>被 {@link #cancelAnimator()} 取消（用户又按下、或 {@link #reset()}）时绝不能去拉
      * 解锁界面 —— ValueAnimator 被取消同样会回调 onAnimationEnd，所以先记 cancelled。
@@ -2102,45 +2211,26 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         a.start();
     }
 
-    /** 条送到顶之后再拉解锁界面；起不来就按 1.0.21 的回弹处理。 */
+    /** 条送到顶之后再拉解锁界面；成败一律钉顶 —— 内容绝不再自己下来（keepup2 拍板）。 */
     private void finishUnlock() {
         // 进度停在 1 时盖层正全糊着 —— 解锁一启动先撤掉，绝不能把糊住的壁纸盖到桌面上；
-        // 这几帧 keyguard 还盖在上面，背景短暂回清晰无碍。回弹路径（show 失败）随
-        // apply(<1) 自动重挂。
+        // 这几帧 keyguard 还盖在上面，背景短暂回清晰无碍。真没解锁、手指拖回来时，
+        // 随 apply(<1) 自动重挂。
         restoreBlurAll();
-        if (LockBarUnlock.show()) {
-            armUnlockGuard();
-            return;
-        }
-        animateTo(0f);
-    }
-
-    /**
-     * 解锁那一下的延时兜底。
-     *
-     * <p>正常路径用不到它：bouncer 一显隐、keyguard 状态一变都会走 onGlobalLayout →
-     * {@link #sync()}，覆盖层随即 GONE 并归零，本兜底那时看到 progress 已经是 0、空转结束。
-     * 但 {@code showPrimaryBouncer} 那条老路返回的是「结果未知」，真没弹出来时没有任何回调
-     * 来收尾，内容就会一直卡在顶上 —— 这里 700ms 后看一眼，还在顶上就当没解锁、收回去。
-     */
-    private void armUnlockGuard() {
-        clearUnlockGuard();
-        Runnable r = () -> {
-            unlockGuard = null;
-            if (progress >= 1f) {
-                animateTo(0f);
-            }
-        };
-        unlockGuard = r;
-        window.postDelayed(r, Math.round(config.unlockMs) + UNLOCK_GRACE_MS);
-    }
-
-    /** 下一次手势 / 归位时把那道兜底撤掉，免得它跟手指抢 progress。 */
-    private void clearUnlockGuard() {
-        Runnable r = unlockGuard;
-        if (r != null) {
-            unlockGuard = null;
-            window.removeCallbacks(r);
+        // show() 被拒不等于「解锁没发生」：开了人脸/指纹时被拒最常见的原因就是生物识别
+        // 抢先认证成功、系统自己已经在退场 —— 此刻回弹必然和退场撞车，画面就是
+        // 「内容掉下来才进桌面」（1.0.22 反馈的第二股下落，帧轨迹实锤是这里的立即回弹）。
+        // 所以成败一律钉顶：系统退场 → 锁屏视图消失时 sync 静默归零；
+        // 真没解锁 → 手指往下一拖就跟随回来（拍板「跟随手势」），下次息屏亮屏也自动归零。
+        LockBarUnlock.show();
+        unlocking = true;
+        // keepup3：钉住后立刻按钉顶姿态重放一帧 —— 位移补满整屏高把「最后一块」送出屏外，
+        // 弧壳/玻璃带/背景糊一并收掉（见 apply 的钉顶分支）。不破 lastApplied 相等保护
+        // 这帧会被跳过（飞行末帧刚写过 1f）；窗口没尺寸就跳过，宁可不补也不能把内容
+        // 拽回原位。
+        if (window.getWidth() > 0 && window.getHeight() > 0) {
+            lastApplied = Float.NaN;
+            apply(1f);
         }
     }
 
