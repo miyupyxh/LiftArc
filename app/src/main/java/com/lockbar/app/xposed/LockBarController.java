@@ -7,6 +7,7 @@ import android.graphics.RenderEffect;
 import android.graphics.Shader;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
@@ -139,6 +140,13 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     private View sharedNotif;
     private View notificationPanel;
     private View bouncer;
+    /**
+     * 上一次 {@link #sync()} 看到的「密码盘在显示」（{@code keyguard_bouncer_container}）。
+     *
+     * <p>只在「由显到隐」的那一刻用它判定「盘被收起、锁屏回来了」，用来把上滑进密码页时
+     * 留下的钉顶状态收掉（见 {@link #resetPinnedIfKeyguardBack()}）。
+     */
+    private boolean bouncerWasShowing;
 
     private LockGlass.Clip clipRoot = new LockGlass.Clip();
     private LockGlass.Clip clipNotif = new LockGlass.Clip();
@@ -152,6 +160,10 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     private int lastBlurRadius = -1;
     /** 全屏壁纸盖层：铺在 window 最底层（index 0），盖住系统壁纸窗口那张真正垫底的壁纸。 */
     private WallCoverView cover;
+    /** 景深主体上的玻璃补画层（depthband1）：只画「玻璃条 AND 主体剪影」，归零即拆。 */
+    private DepthBandPass depthBand;
+    /** 景深主体的毛玻璃影子层（depthband2）：弧线糊侧镜像主体并挂同款模糊，归零即拆。 */
+    private final java.util.ArrayList<DepthFrostView> depthFrost = new java.util.ArrayList<>();
     private boolean clipInstalled;
     /**
      * 壁纸/景深层的原始 translationY（首次反向补偿时记录，复位时还原）。
@@ -227,6 +239,41 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     private float lift;
     /** 手指还按着、正在跟手。 */
     private boolean liftTracking;
+
+    /**
+     * 上升在手指/动画手里（fpshield1 的闸）：把手拖动、被吞的屏内上滑两条入口都置位，
+     * 飞升段由 {@link #unlocking} 换防（{@link #finishUnlock()} 里无缝交接）。
+     * 与 {@link #liftTracking} 分开：那个只管「吞过 MOVE 的屏内手势」的收尾语义，
+     * 把手路径根本不经过它 —— 混用会在把手拖升时漏屏蔽指纹。
+     */
+    private boolean fingerRising;
+    /**
+     * 本轮上升的起点（{@link SystemClock#uptimeMillis()}，0 = 没有在上升）。
+     *
+     * <p>fpshield5 用它给「上升期间压住指纹会话」加一个 5s 上限：万一
+     * {@link #fingerRising} 因为异常路径没归零，超时后不再压 —— 宁可漏屏蔽，
+     * 也绝不把指纹永久压死（违反密码盘纪律）。
+     */
+    private long fingerRisingAt;
+    /**
+     * fpshield3：结果侧宽限截止（{@link SystemClock#uptimeMillis()}，0 = 不吞）。
+     *
+     * <p>为什么单靠 {@link #fingerRising} 不够：本代光学指纹的认证在 HAL 侧自主完成，
+     * 一次按压从触摸到成功要 200-500ms —— 上滑往往已经结束、{@link #fingerRising} 也
+     * 清零了，结果才回来。按「当前是否在上升」判闸，这一下就漏成解屏（实测反馈
+     * 「上滑过程中能识别指纹」）。所以上升一开始/结束时都上膛一个短宽限窗口，让迟到
+     * 的那一下结果照样被吞；新的一次触摸（{@link #preTouch} 的 DOWN 或指纹入口按下时
+     * 闸门已关）立刻撤膛 —— 中止手势后再按指纹照常有反应。
+     */
+    private long fpResultUntil;
+    /** fpshield3：上升结束后结果侧继续吞的宽限，覆盖光学指纹的认证延迟。 */
+    private static final long FP_RESULT_GRACE_MS = 1000L;
+    /**
+     * fpshield5：上升期间压住指纹会话的最长时间。
+     *
+     * <p>只是「标志卡住时别把指纹永久压死」的兜底，正常手势几百毫秒就结束了。
+     */
+    private static final long FP_SILENCE_MAX_MS = 5000L;
     /** 时间容器被我们改动前的原始 translationY（系统可能自己也在写）。 */
     private float clockBaseY = Float.NaN;
     private float clockSecondBaseY = Float.NaN;
@@ -336,6 +383,163 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     }
 
     /**
+     * {@code UdfpsController#onTouch} 前置回调（fpshield1）：上升动画期间屏蔽指纹识别。
+     *
+     * <p>用户反馈「解锁页上升时按指纹区会触发识别」——识别与上升动画撞车。指纹触摸的
+     * 总闸是 {@code UdfpsController#onTouch}：锁屏图标的监听器（UdfpsKeyguardViewController
+     * 的内类）和 MIUI 指纹浮层窗口（独立窗口，我们窗口层的钩子根本看不见它）两条路都
+     * 汇进这一个方法（OS1 反编译实锤），在这里挡一次全挡。
+     *
+     * @return true = 吃掉这次触摸（识别不启动）；false = 照常放行
+     */
+    static boolean shouldBlockUdfpsTouch() {
+        LockBarController c = sInstance;
+        if (c == null) {
+            return false;
+        }
+        return c.blockUdfpsTouch();
+    }
+
+    /**
+     * 屏蔽判定：模块关着不拦；密码盘可见不拦（钉顶挂着时盘才是主交互面，盘上指纹
+     * 照常工作）；只拦「正在上升」——手指拖着升（把手 / 被吞的屏内上滑）与松手后的
+     * 飞升 / 解锁钉顶。松手不进解锁、回弹、归位各分支都已即时放行。
+     */
+    private boolean blockUdfpsTouch() {
+        if (!config.enabled) {
+            return false;
+        }
+        if (bouncer != null && bouncer.getVisibility() == View.VISIBLE) {
+            return false;
+        }
+        return fingerRising || unlocking;
+    }
+
+    /**
+     * 结果侧闸（fpshield3）：比 {@link #blockUdfpsTouch()} 多一个宽限窗口。
+     *
+     * <p>入口闸只认「此刻在不在上升」；认证结果却常在上升结束之后才回来（HAL 侧自主
+     * 认证有 200-500ms 延迟），所以结果侧必须多吞一个短窗口，否则抬手那一下正好漏成
+     * 解屏。宽限只由本模块的上升动作上膛（见 {@link #armFpResult()}），新的一次触摸会
+     * 立刻撤膛，正常按指纹不受影响。
+     */
+    static boolean shouldBlockFpResult() {
+        LockBarController c = sInstance;
+        if (c == null) {
+            return false;
+        }
+        return c.blockFpResult();
+    }
+
+    private boolean blockFpResult() {
+        if (!config.enabled) {
+            return false;
+        }
+        if (bouncer != null && bouncer.getVisibility() == View.VISIBLE) {
+            return false;
+        }
+        return fingerRising || unlocking
+                || (fpResultUntil != 0 && SystemClock.uptimeMillis() < fpResultUntil);
+    }
+
+    /**
+     * 结果侧闸门「为什么」开（诊断用，fpshield4）。
+     *
+     * <p>日志里一眼看出是还在上升、飞升/解锁中，还是迟到的结果落进了宽限窗口 ——
+     * 分诊时不用再猜。只读判定，不改任何状态；条件与 {@link #blockFpResult()} 一一对应。
+     */
+    static String fpGateReason() {
+        LockBarController c = sInstance;
+        if (c == null) {
+            return "无控制器";
+        }
+        return c.describeFpGate();
+    }
+
+    private String describeFpGate() {
+        if (!config.enabled) {
+            return "模块关闭";
+        }
+        if (bouncer != null && bouncer.getVisibility() == View.VISIBLE) {
+            return "密码盘可见";
+        }
+        if (fingerRising) {
+            return "上升中";
+        }
+        if (unlocking) {
+            return "解锁中";
+        }
+        if (fpResultUntil != 0 && SystemClock.uptimeMillis() < fpResultUntil) {
+            return "宽限窗口";
+        }
+        return "放行";
+    }
+
+    /**
+     * 上升期是否要把「开指纹会话」压住（fpshield5）。
+     *
+     * <p>fpshield4 实测暴露的新问题：上滑期间每按一次指纹，识别都会成功一次 → 被我们吞掉
+     * → 再立刻换防重开 → 用户连按就一路循环（日志里 1 秒内 4~8 轮）。MIUI 的 FOD 侧从来
+     * 看不到成功回调（MIUI 的 {@code onPreBiometricAuthenticated} 就在被吞掉的那个方法
+     * 里），于是每一轮都被它记成一次「没结果」，用户连按几下就撞上「指纹识别次数上限」。
+     *
+     * <p>治本的做法不是吞结果，而是<b>上升期间干脆不让会话起来</b>：这时按压根本不会产生
+     * 认证 —— 既不消耗次数，也没有结果要吞。只在 {@link #fingerRising} 期间压（手势级、
+     * 几百毫秒）；{@link #unlocking} 不压，飞升/钉顶阶段仍由结果侧闸兜住 —— 免得
+     * {@code unlocking} 万一没归零把指纹永久压死。
+     *
+     * <p>再加 {@link #FP_SILENCE_MAX_MS} 上限：标志卡住时超时即不再压（漏屏蔽可以接受，
+     * 指纹永久失效不可以）。
+     */
+    static boolean isFpSilenced() {
+        LockBarController c = sInstance;
+        if (c == null || !c.fingerRising) {
+            return false;
+        }
+        long since = c.fingerRisingAt;
+        if (since == 0) {
+            return true;
+        }
+        return SystemClock.uptimeMillis() - since <= FP_SILENCE_MAX_MS;
+    }
+
+    /** 上升开始/结束：结果侧上膛，覆盖迟到的那一下认证结果。 */
+    private void armFpResult() {
+        fpResultUntil = SystemClock.uptimeMillis() + FP_RESULT_GRACE_MS;
+        if (fingerRising) {
+            // 上升开始：记下起点，fpshield5 的「压住上限」按它算
+            fingerRisingAt = SystemClock.uptimeMillis();
+        }
+    }
+
+    /** 新的一次触摸：闸门已关 = 用户主动按指纹，撤膛（中止手势后再按必须有反应）。 */
+    private void disarmFpResult() {
+        if (!fingerRising && !unlocking) {
+            fpResultUntil = 0;
+        }
+    }
+
+    /**
+     * 指纹入口按下（每一代 UDFPS 入口都上报，闸门开没开都要报）。
+     *
+     * <p>上升期按下 = 这次认证是上滑带出来的，它的结果要吞；闸门关着按下 = 用户主动
+     * 按指纹，撤膛放行。两条合成一条规则，既覆盖「上升中按」，也不误伤「中止后按」。
+     */
+    static void noteUdfpsDown() {
+        LockBarController c = sInstance;
+        if (c == null) {
+            return;
+        }
+        if (c.fingerRising || c.unlocking) {
+            c.armFpResult();
+            ModuleLog.d("指纹入口按下：上升中 → 结果侧上膛");
+        } else {
+            c.disarmFpResult();
+            ModuleLog.d("指纹入口按下：闸门关 → 结果侧撤膛");
+        }
+    }
+
+    /**
      * 事件进入系统之前先过一遍。
      *
      * <ul>
@@ -359,6 +563,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                 downInHandle = inHandleBox(downX, downY);
                 blockSystemSwipe = false;
                 gestureExempt = resolveGestureExempt();
+                // 新手势按下：上一次上滑的结果宽限作废（用户又在主动操作了，fpshield3）
+                disarmFpResult();
                 // 上一次手势如果还悬着（回弹中途又按下），先把时间放回原位
                 clearLift();
                 return TOUCH_PASS;
@@ -373,6 +579,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                         && shouldBlockSystemSwipe()) {
                     blockSystemSwipe = true;
                     liftTracking = true;
+                    fingerRising = true;    // 屏内上滑升起来了：期间屏蔽指纹（fpshield1）
+                    armFpResult();          // 结果侧同步上膛（fpshield3）：认证结果常晚于抬手
                     blockCount++;
                     noteBlock("block#" + blockCount
                             + "@" + Math.round(downY * 100f / Math.max(1, window.getHeight()))
@@ -389,6 +597,11 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             case MotionEvent.ACTION_CANCEL:
                 if (liftTracking) {
                     liftTracking = false;
+                    fingerRising = false;   // 手离屏：这条屏内上滑到此为止，指纹恢复
+                    armFpResult();          // 但结果侧再宽限一小段：认证结果可能还在路上（fpshield3）
+                    // fpshield5：上升期间指纹会话是被压住的，手势一收必须补回来，
+                    // 否则「中止手势后按指纹」没反应
+                    LockBarHooks.requestFpRearmSoon();
                     springLiftBack();
                 }
                 // 本手势吞过 MOVE：按“手势被收走”收尾，把 UP 改写成 CANCEL 放行（见方法注释）。
@@ -615,6 +828,51 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                 || n.contains("ListView") || n.contains("ViewPager");
     }
 
+    /**
+     * 密码盘收起（{@code StatusBarKeyguardViewManager#hideBouncer} 执行完之后调）。
+     *
+     * <p><b>实测 bug</b>：上滑进密码页 → 点「返回」→ 页面变成纯壁纸：时钟、通知全在屏外，
+     * 只剩状态栏（那是另一个窗口）还看得见；而且在这个页面上滑会直接触发系统解锁。
+     *
+     * <p>两个症状同一个根：上滑进密码页时内容已经被钉在顶上（{@code progress=1} /
+     * {@code unlocking=true}），而 {@code sync()} 只在「锁屏视图真的消失」时才归零
+     * （keepup1/2 拍板，为的是别在解锁退场时把内容当着用户面拽下来）。密码盘一收，
+     * 锁屏根本没消失 —— 于是钉顶姿态一直留着：内容全在屏外 = 纯壁纸；
+     * 同时 {@link #shouldBlockSystemSwipe()} 见到 {@code progress > 0} 会判定
+     * 「我们自己正在拖」而放行 → 那一滑就落到系统手里解锁了。
+     *
+     * <p>所以盘一收就补一刀：**只要还留在锁屏上**（{@code sKeyguardState != 0}）且盘确实
+     * 不在了，就把钉顶状态收掉。真解锁时（密码正确 / 生物识别）keyguard 会退场，
+     * 那条路必须继续钉顶等淡出 —— 所以延迟一点再判，绝不抢在退场之前把内容拽下来。
+     */
+    static void onBouncerHidden() {
+        final LockBarController c = sInstance;
+        if (c == null) {
+            return;
+        }
+        c.window.postDelayed(c::resetPinnedIfKeyguardBack, 120L);
+    }
+
+    /**
+     * 「密码盘收起 + 锁屏还在」→ 把钉顶状态收掉。幂等，任何一步不成立就什么都不做。
+     */
+    private void resetPinnedIfKeyguardBack() {
+        if (sKeyguardState == 0) {
+            return;     // 明确不在锁屏：真解锁，交给既有钉顶逻辑等锁屏退场
+        }
+        if (bouncer != null && bouncer.getVisibility() == View.VISIBLE) {
+            return;     // 盘又开了（连按返回 / 重新输密码），别动
+        }
+        if (fingerRising || liftTracking) {
+            return;     // 手上还有手势，不抢
+        }
+        if (progress != 0f || unlocking) {
+            ModuleLog.d("密码盘收起·锁屏回位：内容归位（否则会停在纯壁纸状态）");
+            ModuleLog.flush();
+            reset();
+        }
+    }
+
     /** {@code KeyguardStateControllerImpl#notifyKeyguardState} 回调。 */
     static void onKeyguardState(boolean showing, boolean occluded) {
         sKeyguardState = (showing && !occluded) ? 1 : 0;
@@ -809,9 +1067,27 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                     note = "ok(paint-override)";
                 }
             }
-        } catch (Throwable t) {
-            note = "color:" + brief(t);
-            log("handle color failed", t);
+        } catch (Throwable missing) {
+            // 澎湃1 的 NavigationHandle 没有 getHandleColor：读它的公开字段 mLightColor
+            // 做同一道「系统色全透明就换成我们解析的系统色」检查（mPaint 两代都公开）。
+            // 老系统这条路走不到（上面 try 成功就直接出），行为零变化
+            try {
+                Object light = cls.getField("mLightColor").get(nav);
+                if (light instanceof Integer && ((Integer) light) >>> 24 < 8) {
+                    Object paint = cls.getField("mPaint").get(nav);
+                    if (paint instanceof android.graphics.Paint) {
+                        ((android.graphics.Paint) paint).setColor(handle.systemHandleColor());
+                        note = "ok(paint-override-light)";
+                    } else {
+                        note = "ok(lightColor)";
+                    }
+                } else {
+                    note = "ok(lightColor)";
+                }
+            } catch (Throwable t) {
+                note = "color:" + brief(t);
+                log("handle color failed", t);
+            }
         }
 
         handle.attachSystemHandle(nav);
@@ -1130,6 +1406,13 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         }
 
         boolean bouncerShowing = bouncer != null && bouncer.getVisibility() == View.VISIBLE;
+        // 密码盘收起（返回键 / 点空白）→ 锁屏回到眼前，但我们的内容还钉在顶上：
+        // 主路是 SBVM#hideBouncer 那条 hook（见 onBouncerHidden），这里按「盘由显到隐」
+        // 的跳变兜一遍，覆盖其它收起路径。两条都是幂等的。
+        if (bouncerWasShowing && !bouncerShowing) {
+            resetPinnedIfKeyguardBack();
+        }
+        bouncerWasShowing = bouncerShowing;
         boolean ready = keyguardRoot != null && keyguardRoot.isAttachedToWindow();
         boolean stateOk = sKeyguardState != 0;      // 0 = 明确不在锁屏；-1 = 未知，退回视图判断
         boolean interactive = isInteractive();
@@ -1187,8 +1470,12 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     /** 惰性解析锁屏相关 View（蓝图 sections 可能在窗口 attach 之后才加进来）。 */
     private void resolve() {
         resolveTry++;
-        View root = find("keyguard_root_view");
-        View notif = find("shared_notification_container");
+        // 锚点历代命名，按序取第一个找得到的：第一项 = 澎湃3/4，第二项 = 澎湃1
+        // （米板5 SystemUI dex 实证：keyguard_background_layer 装着时钟+信息层+锁图标
+        //   = 内容根；notification_container_parent 是包着通知列表的壳 = 通知容器）。
+        // 名字不存在时 getIdentifier=0 → find 返回 null → 自然落下一个，老系统一字不差
+        View root = findFirst("keyguard_root_view", "keyguard_background_layer");
+        View notif = findFirst("shared_notification_container", "notification_container_parent");
         View panel = find("notification_panel");
         View box = find("keyguard_bouncer_container");
 
@@ -1242,6 +1529,10 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
      *
      * <p>已知交互：压暗方向开「上面」且玻璃同开时，黑纱（在 overlay、比沉底的玻璃高）
      * 会多压玻璃一层；默认的「下面」方向黑纱区与玻璃带不重叠，不受影响。
+     *
+     * <p>景深主体是唯一不吃这个遮挡的例外（depthband1）：deducted_image_view 等主体
+     * 抠图层在 root 子树里、z 高于沉底的玻璃条，亮带被它挡住 —— 由 {@link DepthBandPass}
+     * 在主体剪影上把玻璃条复画补回（见 {@link #ensureDepthBandPass}）。
      */
     private void placeStripUnderContent() {
         if (window == null || strip == null || keyguardRoot == null) {
@@ -1310,6 +1601,20 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /**
+     * 按序找第一个存在的名字：本 ROM 没有的命名 getIdentifier=0 → {@link #find} 返回 null
+     * → 落到下一个（跨系统世代的锚点别名用这个，老系统行为与从前逐字节一致）。
+     */
+    private View findFirst(String... names) {
+        for (String name : names) {
+            View v = find(name);
+            if (v != null) {
+                return v;
+            }
+        }
+        return null;
     }
 
     // ------------------------------------------------------------------ 时间上移（仿 iOS）
@@ -1576,6 +1881,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
      * {@link WallCoverView#setShell} 逐帧喂的同源弧线裁出，与压暗分界线重合，
      * 弧线以上不画、透出真实壁纸保持清晰。景深主体/前景抠图浮在上层，按拍板
      * 保持清晰，时钟/通知同样清晰；给树内景深层挂效果的老路已整体拆除。
+     * （玻璃条被景深主体挡住的缺口由补画层 depthband1 管，与本模糊无关。）
      * 半径 = 模糊程度 × 进度 × 20dp 连续渐强，不做分级阶梯；取整后没变就不重建 effect，
      * 稳态滑动不产生分配。
      */
@@ -1603,6 +1909,12 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             ensureCover();
             if (cover != null) {
                 cover.setRenderEffect(effect);
+                // 景深主体影子层（depthband2）：盖层在场才挂 —— 背景没糊时单独糊主体
+                // 会前後不一致；effect 与盖层同一实例，半径逐帧同源。
+                ensureDepthFrost();
+                for (int i = 0; i < depthFrost.size(); i++) {
+                    depthFrost.get(i).setRenderEffect(effect);
+                }
             }
             lastBlurRadius = r;
         } catch (Throwable t) {
@@ -1640,11 +1952,12 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     }
 
     /**
-     * 收起模糊：把盖层撤出窗口、半径缓存归 -1（下次起滑重挂）。上层（时钟/通知/景深主体）
-     * 从头到尾都没被碰过、一律清晰，无需处理；系统自己的模糊（下拉玻璃、通知栏过渡）
-     * 是逐帧重挂的，同样不受影响。
+     * 收起模糊：把盖层与主体影子层撤出窗口、半径缓存归 -1（下次起滑重挂）。
+     * 时钟/通知从头到尾没被碰过、一律清晰；景深主体源层同样零改动（影子层只是
+     * 镜像，拆除即无残留）。系统自己的模糊（下拉玻璃、通知栏过渡）逐帧重挂，不受影响。
      */
     private void restoreBlurAll() {
+        detachDepthFrost();
         if (cover != null) {
             try {
                 cover.setRenderEffect(null);
@@ -1745,6 +2058,19 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         if (cover != null) {
             cover.setShell(arcShape, config.dimUpper);
         }
+        // 主体影子层喂同一份弧（depthband2）：与盖层同点分发，糊侧逐帧对齐
+        for (int i = 0; i < depthFrost.size(); i++) {
+            depthFrost.get(i).setShell(arcShape, config.dimUpper);
+        }
+        // 景深补画层跟手重画（depthband1）：它复画的是玻璃条**当前帧**的带，必须与手势
+        // 同节拍失效 —— 首版漏了这句，补画层冻在挂载那一帧，主体上只有底部一段静止的带，
+        // 弧升到中上部后补画就再也跟不上（用户实测「底部有、中上部没有」的死因）。
+        if (depthBand != null) {
+            depthBand.invalidate();
+        }
+        // 景深主体补画玻璃（depthband1）：主体抠图层 z 高于沉底的玻璃条、亮带会被它挡住，
+        // 这里在主体剪影上把玻璃条复画一遍 —— 与手势同节拍，归零由 clearClips 拆除。
+        ensureDepthBandPass();
         // 玻璃条用的是同一条弧线（同一份 Shape），逐帧跟手，不另起任何动画。
         // rimAlpha（= smoothstep(g)）照旧传下去，但 1.0.22 起它**不再控制玻璃强度**：
         // 强度在 rebuild() 里恒等于「玻璃参数」页的不透明度，手势第一帧就是满的。
@@ -1790,12 +2116,13 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         }
     }
 
-    /** 整套全收（手势归零 / 尺寸无效）：裁切 + 描边壳 + 玻璃条的外壳一起。 */
+    /** 整套全收（手势归零 / 尺寸无效）：裁切 + 描边壳 + 玻璃条的外壳 + 景深补画一起。 */
     private void clearClips() {
         clearArcClips();
         if (rim != null && strip != null) {
             strip.clear();
         }
+        detachDepthBandPass();
     }
 
     private static void setTranslation(View v, float y) {
@@ -1882,9 +2209,167 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         return isDepthLike(id) || isDepthLike(v.getClass().getSimpleName());
     }
 
+    // ------------------------------------------------------ 景深主体上的玻璃补画（depthband1）
+
+    /**
+     * 玻璃条在景深主体上「续」一段：underlay1 把玻璃条沉到锁屏内容之下，时钟/通知压在
+     * 玻璃上是拍板效果；但主体抠图层（deducted_image_view 等）是壁纸场景不是内容，它长在
+     * keyguard_root 子树里、z 比沉底的玻璃条高 —— 亮带扫过主体时被它整段挡住，看起来
+     * 就是「主体上没有玻璃」。
+     *
+     * <p>做法：把主体层挑出来（{@link #isSubjectCutout}），各建一张 ALPHA_8 剪影，
+     * 叠一个 {@link DepthBandPass} —— 每帧把玻璃条自己复画进 saveLayer，再按剪影
+     * DST_IN 剔掉带外像素。输出 = 亮带 AND 主体剪影：主体处亮带续上；时钟/通知处本层
+     * 全透明，玻璃仍在它们下面（underlay1 一个像素不破）。材质完全复用 strip 自己的
+     * onDraw，不复制 shader、不动任何 K_* 数值。
+     *
+     * <p>挑层比锚定严（锚定钉「画壁纸本身」的整层，这里只要「主体抠图」语义的名字）：
+     * 壁纸预览/背景层一律不进剪影 —— 它们是整屏背景，进剪影等于把亮带补到全屏、盖住时钟。
+     * 找不到主体层就不挂（普通壁纸零开销）；源层零改动（剪影是只读快照，归零整层拆除）。
+     */
+    private void ensureDepthBandPass() {
+        if (window == null || strip == null || !config.glassLive) {
+            return;
+        }
+        if (depthBand != null) {
+            if (depthBand.getParent() == window) {
+                return;   // 本帧已挂着：手势期间幂等
+            }
+            depthBand.clear();   // 窗口换过（面板重建）：旧层作废重挂
+            depthBand = null;
+        }
+        try {
+            java.util.ArrayList<View> hits = new java.util.ArrayList<>();
+            collectBandSource(keyguardRoot, hits);
+            collectBandSource(sharedNotif, hits);
+            collectBandSource(notificationPanel, hits);
+            if (hits.isEmpty() || window.indexOfChild(overlay) < 0) {
+                return;   // 没有主体（普通壁纸）/ overlay 不在树里：保持现状
+            }
+            DepthBandPass pass = new DepthBandPass(window.getContext());
+            pass.setStrip(strip);
+            pass.setSources(hits);
+            // 插在 overlay 正下方：压过锁屏内容与主体（补画要盖住主体），
+            // rim/黑纱/小白条/提示字仍在 overlay 里照旧压顶
+            window.addView(pass, window.indexOfChild(overlay), matchParent());
+            depthBand = pass;
+            ModuleLog.d("景深补画 attached sources=" + hits.size());
+        } catch (Throwable t) {
+            log("ensureDepthBandPass failed", t);
+            depthBand = null;
+        }
+    }
+
+    /** 手势归零整拆（clearClips 收尾走这里）：补画层与剪影一起撤，源层零改动无残留。 */
+    private void detachDepthBandPass() {
+        DepthBandPass p = depthBand;
+        if (p == null) {
+            return;
+        }
+        depthBand = null;
+        try {
+            window.removeView(p);
+        } catch (Throwable ignored) {
+            // window 已换：旧树随窗消亡，无需处理
+        }
+        p.clear();
+    }
+
+    /**
+     * 景深主体的毛玻璃影子层（depthband2）：锚定把主体钉在原位保持锐利，弧线糊侧里
+     * 周围壁纸是磨砂的、主体却是锐利的洞。这里给每个主体层插一个同父同参的影子层，
+     * 逐帧镜像主体、只画糊的那半并挂与盖层相同的模糊 —— 源层零改动，遮挡关系不动。
+     * 只在盖层在场时挂（applySwipeBlur 的 cover 分支里调用）；无主体（普通壁纸）零开销。
+     */
+    private void ensureDepthFrost() {
+        if (window == null || strip == null || !depthFrost.isEmpty()) {
+            return;
+        }
+        try {
+            java.util.ArrayList<View> hits = new java.util.ArrayList<>();
+            collectBandSource(keyguardRoot, hits);
+            collectBandSource(sharedNotif, hits);
+            collectBandSource(notificationPanel, hits);
+            for (int i = 0; i < hits.size(); i++) {
+                View v = hits.get(i);
+                android.view.ViewGroup p = (android.view.ViewGroup) v.getParent();
+                if (p == null) {
+                    continue;
+                }
+                DepthFrostView fv =
+                        new DepthFrostView(window.getContext(), v, v.getLayoutParams());
+                // 插在主体正上方一个位置：z 只压过主体自己，兄弟顺序一概不动
+                p.addView(fv, Math.min(p.indexOfChild(v) + 1, p.getChildCount()));
+                depthFrost.add(fv);
+            }
+            if (!depthFrost.isEmpty()) {
+                ModuleLog.d("景深毛玻璃影子 attached=" + depthFrost.size());
+            }
+        } catch (Throwable t) {
+            log("ensureDepthFrost failed", t);
+            detachDepthFrost();
+        }
+    }
+
+    /** 收影子层（restoreBlurAll 走这里）：逐个摘除清引用，源层无任何残留。 */
+    private void detachDepthFrost() {
+        for (int i = 0; i < depthFrost.size(); i++) {
+            DepthFrostView fv = depthFrost.get(i);
+            fv.setRenderEffect(null);
+            try {
+                android.view.ViewGroup p = (android.view.ViewGroup) fv.getParent();
+                if (p != null) {
+                    p.removeView(fv);
+                }
+            } catch (Throwable ignored) {
+                // 父容器已随面板重建换代：影子层随旧树消亡，无需处理
+            }
+            fv.clear();
+        }
+        depthFrost.clear();
+    }
+
+    /**
+     * 全量下钻收集主体抠图层：与锚定的「最上层即止」不同，这里一路下钻 —— 主体可能嵌在
+     * depth 壳里，剪影取的是并集、多收无害；上限 4 层防奇葩 ROM 疯狂嵌套。
+     */
+    private void collectBandSource(View root, java.util.List<View> out) {
+        if (root == null || out.size() >= 4) {
+            return;
+        }
+        if (isSubjectCutout(root)) {
+            out.add(root);
+            return;
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) root;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                collectBandSource(g.getChildAt(i), out);
+            }
+        }
+    }
+
+    /**
+     * 只有「主体抠图」语义的名字进剪影：deducted / subject / portrait / crop
+     * （四个词都在 isDepthLike 清单里，本判定是它的真子集）。
+     */
+    private boolean isSubjectCutout(View v) {
+        String s = (idName(v) + " " + v.getClass().getSimpleName())
+                .toLowerCase(java.util.Locale.ROOT);
+        if (s.contains("wallpaper") || s.contains("background") || s.contains("preview")
+                || s.contains("blur") || s.contains("mask")) {
+            return false;   // 整屏背景/合成壳：进剪影 = 亮带补到全屏、盖住时钟
+        }
+        return s.contains("deducted") || s.contains("subject")
+                || s.contains("portrait") || s.contains("crop");
+    }
+
     private void reset() {
         cancelAnimator();
         unlocking = false;
+        fingerRising = false;   // 一切收场都归零：指纹屏蔽不留残留（fpshield1）
+        fpResultUntil = 0;      // 结果侧宽限也归零（fpshield3）
+        fingerRisingAt = 0;     // 上升起点也清掉（fpshield5）
         clearLift();
         progress = 0f;
         startProgress = 0f;
@@ -1933,6 +2418,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     public void onDragStart(float y) {
         cancelAnimator();
         unlocking = false;
+        fingerRising = true;    // 把手接管：整个拖升过程屏蔽指纹（fpshield1）
+        armFpResult();          // 结果侧同步上膛（fpshield3）
         startProgress = progress;
         lastTickBucket = bucket(progress);
         viewsDumped = false;
@@ -1980,9 +2467,14 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         // 顺序是**先让条飞到顶、再拉解锁界面**：以前是 show() 和 animateTo(0f) 同时发，
         // 密码盘往上冒、条往下掉，两股反方向撞在一起就是那股简陋劲。
         if (!cancel && (progress >= UNLOCK_THRESHOLD || flickByVelocity(velocityUpPx))) {
+            // 屏蔽不撤：飞升这段接着由 unlocking 换防（finishUnlock 里无缝交接，fpshield1）
             animateUpThenUnlock();
             return;
         }
+        fingerRising = false;   // 松手不进解锁：内容不再上升，指纹立刻恢复
+        armFpResult();          // 结果侧再宽限一小段，等迟到的那一下认证结果（fpshield3）
+        // fpshield5：把手拖升期间指纹会话是被压住的，松手立刻要回来
+        LockBarHooks.requestFpRearmSoon();
         // cancel 也包含了“点击小白条没有拖动”的情况：点击视为归位
         if (cancel || config.releaseReturn) {
             animateTo(0f);
@@ -2224,6 +2716,10 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         // 真没解锁 → 手指往下一拖就跟随回来（拍板「跟随手势」），下次息屏亮屏也自动归零。
         LockBarUnlock.show();
         unlocking = true;
+        fingerRising = false;   // 指纹屏蔽换防给 unlocking（fpshield1）：同线程无缝，零空档
+        armFpResult();          // 结果侧继续上膛，覆盖退场窗口里的迟到结果（fpshield3）
+        // fpshield5：压住期间攒下的换防在这里补一次（unlocking 期间不压会话，结果侧闸兜住）
+        LockBarHooks.requestFpRearmSoon();
         // keepup3：钉住后立刻按钉顶姿态重放一帧 —— 位移补满整屏高把「最后一块」送出屏外，
         // 弧壳/玻璃带/背景糊一并收掉（见 apply 的钉顶分支）。不破 lastApplied 相等保护
         // 这帧会被跳过（飞行末帧刚写过 1f）；窗口没尺寸就跳过，宁可不补也不能把内容

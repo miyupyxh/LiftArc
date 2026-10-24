@@ -99,12 +99,38 @@ final class LockBarUnlock {
                 return false;
             }
 
-            // 拿不到 interactor 就退回老办法：showPrimaryBouncer（看不到返回值）
-            Method show = m.getClass().getMethod("showPrimaryBouncer", String.class);
-            show.setAccessible(true);
-            show.invoke(m, REASON);
-            status("unlock=bouncer-legacy(user " + userId + ", 结果未知)");
-            return true;
+            // 澎湃3/4 老办法：showPrimaryBouncer（看不到返回值）
+            try {
+                Method show = m.getClass().getMethod("showPrimaryBouncer", String.class);
+                show.setAccessible(true);
+                show.invoke(m, REASON);
+                status("unlock=bouncer-legacy(user " + userId + ", 结果未知)");
+                return true;
+            } catch (NoSuchMethodException missing) {
+                // 澎湃1 没有 showPrimaryBouncer —— 它自己的 bouncer 入口在下面两条
+            }
+
+            // 澎湃1：SBVM.showBouncer(boolean)。它内部 = resetAlternateAuth + mBouncer.show
+            // + updateStates，与系统自己的上滑弹密码盘同一条链；第二参在本代 dex 里是死参
+            // （寄存器随即被 getCurrentUser 覆盖），恒传 false = 系统调用方同款实参
+            try {
+                Method show = m.getClass().getMethod("showBouncer", boolean.class);
+                show.setAccessible(true);
+                show.invoke(m, false);
+                status("unlock=bouncer-showBouncer(user " + userId + ")");
+                return true;
+            } catch (NoSuchMethodException missing) {
+                // 连 showBouncer 都没有：直接落到底层 KeyguardBouncer 的主安全页
+            }
+            Object bouncer = field(m, "mBouncer");
+            if (bouncer != null) {
+                Method show = bouncer.getClass().getMethod("show", boolean.class);
+                show.setAccessible(true);
+                show.invoke(bouncer, true);   // show(true) = showPrimarySecurityScreen = 密码盘
+                status("unlock=bouncer-direct(user " + userId + ")");
+                return true;
+            }
+            throw new NoSuchMethodException("no bouncer entry on " + m.getClass().getName());
         } catch (Throwable t) {
             status("unlock=fail(" + brief(t) + ")");
             XposedInterface mod = module;
@@ -136,6 +162,13 @@ final class LockBarUnlock {
     private static boolean isSecure(Object m, int userId) {
         try {
             Object model = field(m, "mKeyguardSecurityModel");
+            if (model == null) {
+                // 澎湃1 的 StatusBarKeyguardViewManager 自己不再持有这个字段：
+                // 改从它公开的 mBouncer（KeyguardBouncer.mKeyguardSecurityModel）上取 ——
+                // 拿到的是同一个 KeyguardSecurityModel，「明确 None 才直开」的口径不变；
+                // 任何一步拿不到仍然是 return true = 按有密码走，绝不放宽
+                model = field(field(m, "mBouncer"), "mKeyguardSecurityModel");
+            }
             if (model == null) {
                 return true;
             }

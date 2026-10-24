@@ -14,8 +14,8 @@ android {
         applicationId = "io.github.miyupyxh.liftarc"
         minSdk = 33
         targetSdk = 35
-        versionCode = 123
-        versionName = "1.0.23"
+        versionCode = 124
+        versionName = "1.0.24"
     }
 
     // 应用本身只有中文，去掉各大库带的几十种语言翻译
