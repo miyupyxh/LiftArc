@@ -123,7 +123,7 @@ internal fun ThemeSettingsScreen(onBack: () -> Unit) {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     SwitchPreference(
                         title = stringResource(R.string.theme_dynamic),
-                        summary = stringResource(R.string.theme_dynamic_summary),
+                        summary = optSummary(R.string.theme_dynamic_summary),
                         startAction = { PrefIcon(Icons.Rounded.Wallpaper) },
                         checked = store.dynamic,
                         onCheckedChange = { store.updateDynamic(it) },
@@ -164,14 +164,14 @@ internal fun ThemeSettingsScreen(onBack: () -> Unit) {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     SwitchPreference(
                         title = stringResource(R.string.theme_blur),
-                        summary = stringResource(R.string.theme_blur_summary),
+                        summary = optSummary(R.string.theme_blur_summary),
                         startAction = { PrefIcon(Icons.Rounded.BlurOn) },
                         checked = store.blur,
                         onCheckedChange = { store.updateBlur(it) },
                     )
                     SwitchPreference(
                         title = stringResource(R.string.theme_floating),
-                        summary = stringResource(R.string.theme_floating_summary),
+                        summary = optSummary(R.string.theme_floating_summary),
                         startAction = { PrefIcon(Icons.Rounded.CallToAction) },
                         checked = store.floatingBar,
                         onCheckedChange = { store.updateFloatingBar(it) },
@@ -179,7 +179,7 @@ internal fun ThemeSettingsScreen(onBack: () -> Unit) {
                     AnimatedVisibility(visible = store.floatingBar) {
                         SwitchPreference(
                             title = stringResource(R.string.theme_glass),
-                            summary = stringResource(R.string.theme_glass_summary),
+                            summary = optSummary(R.string.theme_glass_summary),
                             startAction = { PrefIcon(Icons.Rounded.WaterDrop) },
                             enabled = store.blur,
                             checked = store.glass,

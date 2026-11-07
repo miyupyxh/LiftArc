@@ -18,6 +18,7 @@ import androidx.compose.material.icons.rounded.ColorLens
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.BrightnessLow
 import androidx.compose.material.icons.rounded.FlashOn
+import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Speed
@@ -86,6 +87,8 @@ internal fun ParamsPage(
     onInputChange: (Boolean) -> Unit,
 ) {
     var enabled by rememberPrefBool(Prefs.KEY_ENABLED, true)
+    var topRightHandle by rememberPrefBool(Prefs.KEY_TOP_RIGHT_HANDLE, false)
+    var lockWidget by rememberPrefBool(Prefs.KEY_LOCK_WIDGET, false)
     var showHandle by rememberPrefBool(Prefs.KEY_SHOW_HANDLE, true)
     var parallax by rememberPrefBool(Prefs.KEY_PARALLAX, true)
     var releaseReturn by rememberPrefBool(Prefs.KEY_RELEASE_RETURN, true)
@@ -144,7 +147,7 @@ internal fun ParamsPage(
                     // 反正总开关一关整页都停了；包一层是为了收起时有动画而不是瞬间消失。
                     SwitchPreference(
                         title = stringResource(R.string.pref_enabled),
-                        summary = stringResource(R.string.pref_enabled_summary),
+                        summary = optSummary(R.string.pref_enabled_summary),
                         startAction = { PrefIcon(Icons.Rounded.AutoAwesome) },
                         checked = enabled,
                         onCheckedChange = { enabled = it },
@@ -153,35 +156,52 @@ internal fun ParamsPage(
                         Column {
                             SwitchPreference(
                                 title = stringResource(R.string.pref_show_handle),
-                                summary = stringResource(R.string.pref_show_handle_summary),
+                                summary = optSummary(R.string.pref_show_handle_summary),
                                 startAction = { PrefIcon(Icons.Rounded.Backup) },
                                 checked = showHandle,
                                 onCheckedChange = { showHandle = it },
                             )
                             SwitchPreference(
+                                title = stringResource(R.string.pref_top_right_handle),
+                                summary = optSummary(R.string.pref_top_right_handle_summary),
+                                startAction = { PrefIcon(Icons.Rounded.Tune) },
+                                checked = topRightHandle,
+                                onCheckedChange = { topRightHandle = it },
+                            )
+                            // 参数入口跟着开关走：开才出现，关就跟着塌下去 —— 与下面「玻璃」
+                            // 那组同一个做法（AnimatedVisibility，不是灰掉、也不是凭空消失）。
+                            AnimatedVisibility(visible = topRightHandle) {
+                                ArrowPreference(
+                                    title = stringResource(R.string.pref_top_right_handle_params),
+                                    summary = optSummary(R.string.pref_top_right_handle_params_summary),
+                                    startAction = { PrefIcon(Icons.Rounded.Tune) },
+                                    onClick = { onOpenSub("top_right") },
+                                )
+                            }
+                            SwitchPreference(
                                 title = stringResource(R.string.pref_parallax),
-                                summary = stringResource(R.string.pref_parallax_summary),
+                                summary = optSummary(R.string.pref_parallax_summary),
                                 startAction = { PrefIcon(Icons.Rounded.Wallpaper) },
                                 checked = parallax,
                                 onCheckedChange = { parallax = it },
                             )
                             SwitchPreference(
                                 title = stringResource(R.string.pref_intercept_swipe),
-                                summary = stringResource(R.string.pref_intercept_swipe_summary),
+                                summary = optSummary(R.string.pref_intercept_swipe_summary),
                                 startAction = { PrefIcon(Icons.Rounded.Swipe) },
                                 checked = interceptSwipe,
                                 onCheckedChange = { interceptSwipe = it },
                             )
                             SwitchPreference(
                                 title = stringResource(R.string.pref_handle_wide),
-                                summary = stringResource(R.string.pref_handle_wide_summary),
+                                summary = optSummary(R.string.pref_handle_wide_summary),
                                 startAction = { PrefIcon(Icons.Rounded.SwapHoriz) },
                                 checked = handleWide,
                                 onCheckedChange = { handleWide = it },
                             )
                             ArrowPreference(
                                 title = stringResource(R.string.pref_hint_page),
-                                summary = stringResource(R.string.pref_hint_page_summary),
+                                summary = optSummary(R.string.pref_hint_page_summary),
                                 startAction = { PrefIcon(Icons.Rounded.TextFields) },
                                 onClick = { onOpenSub("hint") },
                             )
@@ -201,7 +221,7 @@ internal fun ParamsPage(
                             NumSliderPreference(
                                 onInputChange = onInputChange,
                                 title = stringResource(R.string.pref_drag_ratio),
-                                summary = stringResource(R.string.pref_drag_ratio_summary),
+                                summary = optSummary(R.string.pref_drag_ratio_summary),
                                 startAction = { PrefIcon(Icons.Rounded.Swipe) },
                                 value = dragRatio,
                                 onValueChange = { dragRatio = it },
@@ -215,7 +235,7 @@ internal fun ParamsPage(
                             NumSliderPreference(
                                 onInputChange = onInputChange,
                                 title = stringResource(R.string.pref_handle_alpha),
-                                summary = stringResource(R.string.pref_handle_alpha_summary),
+                                summary = optSummary(R.string.pref_handle_alpha_summary),
                                 startAction = { PrefIcon(Icons.Rounded.Tune) },
                                 value = handleAlpha,
                                 onValueChange = { handleAlpha = it },
@@ -229,14 +249,14 @@ internal fun ParamsPage(
                             Column {
                                 SwitchPreference(
                                     title = stringResource(R.string.pref_release_return),
-                                    summary = stringResource(R.string.pref_release_return_summary),
+                                    summary = optSummary(R.string.pref_release_return_summary),
                                     startAction = { PrefIcon(Icons.Rounded.Refresh) },
                                     checked = releaseReturn,
                                     onCheckedChange = { releaseReturn = it },
                                 )
                                 SwitchPreference(
                                     title = stringResource(R.string.pref_flick_unlock),
-                                    summary = stringResource(R.string.pref_flick_unlock_summary),
+                                    summary = optSummary(R.string.pref_flick_unlock_summary),
                                     startAction = { PrefIcon(Icons.Rounded.FlashOn) },
                                     checked = flickUnlock,
                                     onCheckedChange = { flickUnlock = it },
@@ -248,7 +268,7 @@ internal fun ParamsPage(
                             NumSliderPreference(
                                 onInputChange = onInputChange,
                                 title = stringResource(R.string.pref_flick_velocity),
-                                summary = stringResource(R.string.pref_flick_velocity_summary),
+                                summary = optSummary(R.string.pref_flick_velocity_summary),
                                 startAction = { PrefIcon(Icons.Rounded.Speed) },
                                 value = flickVelocity,
                                 onValueChange = { flickVelocity = it },
@@ -261,7 +281,7 @@ internal fun ParamsPage(
                             NumSliderPreference(
                                 onInputChange = onInputChange,
                                 title = stringResource(R.string.pref_unlock_ms),
-                                summary = stringResource(R.string.pref_unlock_ms_summary),
+                                summary = optSummary(R.string.pref_unlock_ms_summary),
                                 startAction = { PrefIcon(Icons.Rounded.Timer) },
                                 value = unlockMs,
                                 onValueChange = { unlockMs = it },
@@ -272,7 +292,7 @@ internal fun ParamsPage(
                         }
                         SwitchPreference(
                             title = stringResource(R.string.pref_haptic),
-                            summary = stringResource(R.string.pref_haptic_summary),
+                            summary = optSummary(R.string.pref_haptic_summary),
                             startAction = { PrefIcon(Icons.Rounded.Vibration) },
                             checked = haptic,
                             onCheckedChange = { haptic = it },
@@ -290,7 +310,7 @@ internal fun ParamsPage(
                         // 玻璃不在它下面（见下面单独的「玻璃」组）。
                         SwitchPreference(
                             title = stringResource(R.string.pref_arc_enabled),
-                            summary = stringResource(R.string.pref_arc_enabled_summary),
+                            summary = optSummary(R.string.pref_arc_enabled_summary),
                             startAction = { PrefIcon(Icons.Rounded.ColorLens) },
                             checked = arcEnabled,
                             onCheckedChange = { arcEnabled = it },
@@ -298,7 +318,7 @@ internal fun ParamsPage(
                         AnimatedVisibility(visible = arcEnabled) {
                             SwitchPreference(
                                 title = stringResource(R.string.pref_arc_dim),
-                                summary = stringResource(R.string.pref_arc_dim_summary),
+                                summary = optSummary(R.string.pref_arc_dim_summary),
                                 startAction = { PrefIcon(Icons.Rounded.DarkMode) },
                                 checked = arcDim,
                                 onCheckedChange = { arcDim = it },
@@ -323,7 +343,7 @@ internal fun ParamsPage(
                                 NumSliderPreference(
                                     onInputChange = onInputChange,
                                     title = stringResource(R.string.pref_dim_strength),
-                                    summary = stringResource(R.string.pref_dim_strength_summary),
+                                    summary = optSummary(R.string.pref_dim_strength_summary),
                                     startAction = { PrefIcon(Icons.Rounded.BrightnessLow) },
                                     value = dimStrength,
                                     onValueChange = { dimStrength = it },
@@ -340,7 +360,7 @@ internal fun ParamsPage(
                                 NumSliderPreference(
                                     onInputChange = onInputChange,
                                     title = stringResource(R.string.pref_arc_width),
-                                    summary = stringResource(R.string.pref_arc_width_summary),
+                                    summary = optSummary(R.string.pref_arc_width_summary),
                                     startAction = { PrefIcon(Icons.Rounded.Tune) },
                                     value = arcWidth,
                                     onValueChange = { arcWidth = it },
@@ -351,7 +371,7 @@ internal fun ParamsPage(
                                 NumSliderPreference(
                                     onInputChange = onInputChange,
                                     title = stringResource(R.string.pref_arc_alpha),
-                                    summary = stringResource(R.string.pref_arc_alpha_summary),
+                                    summary = optSummary(R.string.pref_arc_alpha_summary),
                                     startAction = { PrefIcon(Icons.Rounded.Wallpaper) },
                                     value = arcAlpha,
                                     onValueChange = { arcAlpha = it },
@@ -362,7 +382,7 @@ internal fun ParamsPage(
                                 )
                                 ArrowPreference(
                                     title = stringResource(R.string.pref_arc_color),
-                                    summary = stringResource(R.string.pref_arc_color_summary) + " · " + hexOf(arcColorValue),
+                                    summary = hexOf(arcColorValue),
                                     startAction = { PrefIcon(Icons.Rounded.ColorLens) },
                                     onClick = {
                                         pendingArcColor = arcColorValue
@@ -392,7 +412,7 @@ internal fun ParamsPage(
                     GroupCard(title = stringResource(R.string.group_blur)) {
                         SwitchPreference(
                             title = stringResource(R.string.pref_blur_on),
-                            summary = stringResource(R.string.pref_blur_on_summary),
+                            summary = optSummary(R.string.pref_blur_on_summary),
                             startAction = { PrefIcon(Icons.Rounded.BlurOn) },
                             checked = blurOn,
                             onCheckedChange = { blurOn = it },
@@ -402,7 +422,7 @@ internal fun ParamsPage(
                             NumSliderPreference(
                                 onInputChange = onInputChange,
                                 title = stringResource(R.string.pref_blur_strength),
-                                summary = stringResource(R.string.pref_blur_strength_summary),
+                                summary = optSummary(R.string.pref_blur_strength_summary),
                                 startAction = { PrefIcon(Icons.Rounded.BlurCircular) },
                                 value = blurStrength,
                                 onValueChange = { blurStrength = it },
@@ -427,7 +447,7 @@ internal fun ParamsPage(
                     GroupCard(title = stringResource(R.string.group_glass)) {
                         SwitchPreference(
                             title = stringResource(R.string.pref_glass_live),
-                            summary = stringResource(R.string.pref_glass_live_summary),
+                            summary = optSummary(R.string.pref_glass_live_summary),
                             startAction = { PrefIcon(Icons.Rounded.AutoAwesome) },
                             checked = glassLive,
                             onCheckedChange = { glassLive = it },
@@ -439,7 +459,7 @@ internal fun ParamsPage(
                         AnimatedVisibility(visible = glassLive) {
                             ArrowPreference(
                                 title = stringResource(R.string.pref_glass_page),
-                                summary = stringResource(R.string.pref_glass_page_summary),
+                                summary = optSummary(R.string.pref_glass_page_summary),
                                 startAction = { PrefIcon(Icons.Rounded.Layers) },
                                 onClick = { onOpenSub("glass") },
                             )
@@ -449,7 +469,32 @@ internal fun ParamsPage(
             }
         }
 
-        item { DebugCard() }
+        // 锁屏小组件：锁屏时钟下方的一排小圆（天气 / 步数 / 电量）。
+        // 放在页面最底部：它和上面「上滑联动」那几组互不相干，属于另一个功能面。
+        item {
+            AnimatedVisibility(visible = enabled) {
+                Column(modifier = Modifier.padding(bottom = 12.dp)) {
+                    GroupCard(title = stringResource(R.string.group_lock_widget)) {
+                        SwitchPreference(
+                            title = stringResource(R.string.pref_lock_widget),
+                            summary = optSummary(R.string.pref_lock_widget_summary),
+                            startAction = { PrefIcon(Icons.Rounded.Insights) },
+                            checked = lockWidget,
+                            onCheckedChange = { lockWidget = it },
+                        )
+                        AnimatedVisibility(visible = lockWidget) {
+                            ArrowPreference(
+                                title = stringResource(R.string.pref_lock_widget_params),
+                                summary = optSummary(R.string.pref_lock_widget_params_summary),
+                                startAction = { PrefIcon(Icons.Rounded.Tune) },
+                                onClick = { onOpenSub("lock_widget") },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
     }
 
     ColorDialog(

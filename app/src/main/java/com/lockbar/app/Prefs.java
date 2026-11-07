@@ -100,6 +100,31 @@ public final class Prefs {
      * 两侧不一致就是 v1.0.15 那种 {@code ClassCastException} 的翻版。
      */
     public static final String KEY_SAFETY_EXIT = "safety_exit";
+    /** 禁用安全模式：设置页开关，true = 永不因崩溃循环判定停用 hook。 */
+    public static final String KEY_SAFETY_DISABLED = "safety_disabled";
+    /** 锁屏右上方小白条：锁屏时右上角短横条，下拉打开控制中心。 */
+    public static final String KEY_TOP_RIGHT_HANDLE = "top_right_handle";
+    public static final String KEY_TOP_RIGHT_BAR_LENGTH = "top_right_bar_len";
+    public static final String KEY_TOP_RIGHT_BAR_THICK = "top_right_bar_thick";
+    public static final String KEY_TOP_RIGHT_BAR_X = "top_right_bar_x";
+    public static final String KEY_TOP_RIGHT_BAR_Y = "top_right_bar_y";
+    public static final String KEY_TOP_RIGHT_BAR_ELASTIC = "top_right_bar_elastic";
+    public static final String KEY_TOP_RIGHT_BAR_OPACITY = "top_right_bar_opacity";
+
+    /** 锁屏小组件：天气 / 步数 / 电池那一排小圆。 */
+    public static final String KEY_LOCK_WIDGET = "lock_widget";
+    /** 小组件相对时钟底部的下移量（dp）。 */
+    public static final String KEY_LOCK_WIDGET_Y = "lock_widget_y";
+    /** 小组件水平偏移（dp，0 = 居中）。 */
+    public static final String KEY_LOCK_WIDGET_X = "lock_widget_x";
+    /** 小组件直径（dp）。 */
+    public static final String KEY_LOCK_WIDGET_SIZE = "lock_widget_size";
+    /** 小组件样式：0 = 环形天气，1 = 环形步数，2 = 条形电池。 */
+    public static final String KEY_LOCK_WIDGET_STYLE = "lock_widget_style";
+    /** 小组件占位时时钟自动缩小。 */
+    public static final String KEY_LOCK_WIDGET_SHRINK_CLOCK = "lock_widget_shrink_clock";
+    /** 小组件是否跟随锁屏上滑。 */
+    public static final String KEY_LOCK_WIDGET_FOLLOW = "lock_widget_follow";
 
     /**
      * 一键清空模块日志（App 写时间戳 → hook 清环形缓冲）。
@@ -113,6 +138,14 @@ public final class Prefs {
     /** SystemUI 写回来的诊断信息（不是配置，不要 syncToFramework 冲掉）。 */
     public static final String KEY_DEBUG_STATUS = "debug_status";
     public static final String KEY_DEBUG_VIEWS = "debug_views";
+    /**
+     * 锁屏状态栏 / 信号塔的实测几何（SystemUI 回传，窗口坐标 px）。
+     *
+     * <p>「右上方小白条」参数页拿它把预览按<b>真机</b>位置 1:1 摆出来 —— 预览不再是
+     * 一张固定截图配死的坐标，而是各机型各按自己的状态栏高度、信号塔位置渲染。
+     * 格式见 {@code LockConfig#KEY_DEBUG_LAYOUT}。
+     */
+    public static final String KEY_DEBUG_LAYOUT = "debug_layout";
     /** 拦截系统上滑的计数（单独一条，免得覆盖掉 unlock=）。 */
     public static final String KEY_DEBUG_BLOCK = "debug_block";
     /**
@@ -268,6 +301,25 @@ public final class Prefs {
         }
         try {
             String s = d.getString(KEY_DEBUG_LOG, "");
+            return s != null ? s : "";
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    /**
+     * 读锁屏状态栏 / 信号塔几何（SystemUI 回传）。
+     *
+     * @return {@code w=..;h=..;dpi=..;sbT=..;sbH=..;tL=..;tT=..;tR=..;tB=..;cls=..}；
+     *         还没有数据（模块没跑过锁屏）时返回空串
+     */
+    public static String readLayout() {
+        SharedPreferences d = diag;
+        if (d == null) {
+            return "";
+        }
+        try {
+            String s = d.getString(KEY_DEBUG_LAYOUT, "");
             return s != null ? s : "";
         } catch (Throwable ignored) {
             return "";

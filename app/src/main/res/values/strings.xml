@@ -28,8 +28,8 @@
     <string name="status_title">模块状态</string>
     <string name="status_activated">已激活</string>
     <string name="status_not_activated">未激活</string>
-    <string name="status_activated_summary">LSPosed 服务已连接，配置改动即时生效</string>
-    <string name="status_not_activated_summary">未连接到 LSPosed，配置暂存本地，激活后自动同步</string>
+    <string name="status_activated_summary">配置即时生效</string>
+    <string name="status_not_activated_summary">配置已暂存在本地</string>
     <string name="status_scope">作用域：com.android.systemui</string>
     <string name="status_working_version">版本 %1$s</string>
 
@@ -51,65 +51,65 @@
     <!-- 基本 -->
     <string name="group_general">常规</string>
     <string name="pref_enabled">启用模块</string>
-    <string name="pref_enabled_summary">总开关，关闭后锁屏恢复原样</string>
+    <string name="pref_enabled_summary">关闭后锁屏恢复原样</string>
     <string name="pref_show_handle">显示小白条</string>
-    <string name="pref_show_handle_summary">在锁屏底部显示系统风格指示条</string>
+    <string name="pref_show_handle_summary">锁屏底部的系统风格指示条</string>
     <string name="pref_parallax">上滑联动</string>
-    <string name="pref_parallax_summary">上滑时壁纸、时间、快捷方式一起上移</string>
+    <string name="pref_parallax_summary">壁纸与时间一起上移</string>
     <string name="pref_intercept_swipe">拦截系统上滑解锁</string>
-    <string name="pref_intercept_swipe_summary">关掉系统自己的上滑解锁，改成只有时间跟着手指上移，到时间一半就停住，松手弹性归位；通知列表还能划，控制中心开合不受影响，左右下角快捷方式不受影响</string>
+    <string name="pref_intercept_swipe_summary">接管系统上滑解锁，内容只跟手上移</string>
     <string name="pref_handle_wide">扩大触控范围</string>
-    <string name="pref_handle_wide_summary">触控区向左右扩展到屏幕两边（底部 36dp 整条都能按到），条本体外观不变</string>
+    <string name="pref_handle_wide_summary">触控区扩展到整屏宽度</string>
     <string name="pref_hint_page">小横条上方文字</string>
-    <string name="pref_hint_page_summary">文字内容、位置、大小、粗细、字体、颜色</string>
+    <string name="pref_hint_page_summary">文字内容、位置、字体与颜色</string>
 
     <!-- 手感 -->
     <string name="group_feel">手感</string>
     <string name="pref_drag_ratio">跟手程度</string>
-    <string name="pref_drag_ratio_summary">数值越大越贴手：100% 时内容与手指完全同步（1:1），需要滑满整屏才拉满；数值越小行程越短、轻轻一滑就到底，但内容会跑在手指前面。拖满行程后不管数值多少都会完全滑出屏幕，不会卡在半屏</string>
+    <string name="pref_drag_ratio_summary">100% = 与手指 1:1</string>
     <string name="pref_release_return">松手回弹</string>
-    <string name="pref_release_return_summary">拉到一半以下松手会弹回原位；关闭则停在原地。拉到一半以上松手直接进解锁</string>
+    <string name="pref_release_return_summary">不足一半松手回弹</string>
     <string name="pref_flick_unlock">速度解锁</string>
-    <string name="pref_flick_unlock_summary" formatted="false">松手那一瞬间手指上滑够快就直接进解锁，不必再划到一半；慢慢拖仍旧要划过半才解锁。跟手程度拉到 100% 时行程接近半屏，开这条甩一下就走</string>
+    <string name="pref_flick_unlock_summary" formatted="false">快速上滑直接解锁</string>
     <string name="pref_flick_velocity">触发速度</string>
-    <string name="pref_flick_velocity_summary" formatted="false">上滑速度达到该值就解锁，单位 dp/s。越小越容易触发；拉到 3000 基本只有狠狠一甩才会触发</string>
+    <string name="pref_flick_velocity_summary" formatted="false">越小越容易触发</string>
     <string name="pref_unlock_ms">解锁动画时长</string>
-    <string name="pref_unlock_ms_summary" formatted="false">触发解锁后，条继续往上飞到屏幕顶所用的时间，单位毫秒；飞完这一段才弹出密码盘。拉小更干脆，拉大更从容</string>
+    <string name="pref_unlock_ms_summary" formatted="false">条飞到屏幕顶的时长</string>
     <string name="pref_haptic">触感反馈</string>
-    <string name="pref_haptic_summary">越过阈值与回弹时轻微震动</string>
+    <string name="pref_haptic_summary">越过阈值与回弹时震动</string>
     <string name="pref_handle_alpha">小白条不透明度</string>
-    <string name="pref_handle_alpha_summary">拖动调节指示条的可见程度</string>
+    <string name="pref_handle_alpha_summary">指示条的可见程度</string>
 
     <!-- 弧形描边 -->
     <string name="group_arc">弧形描边</string>
     <string name="pref_arc_enabled">启用弧形描边</string>
-    <string name="pref_arc_enabled_summary">按屏幕圆角绘制弧形光边</string>
+    <string name="pref_arc_enabled_summary">按屏幕圆角画弧形光边</string>
     <string name="pref_arc_dim">iOS 式压暗</string>
-    <string name="pref_arc_dim_summary">上滑时不画描边，改用明暗对比自然显出那条弧线</string>
+    <string name="pref_arc_dim_summary">用明暗对比显出弧线</string>
     <string name="pref_dim_side">压暗位置</string>
     <!-- 「压暗位置」不配副文本：miuix BasicComponent 在 summary 为 null 时，只有标题一行，
          会在 56dp 行高内把标题垂直居中（这正是想要的效果）。别给它加 summary，加了标题就会被顶上去。 -->
     <string name="pref_dim_side_upper">上半部分</string>
     <string name="pref_dim_side_lower">下半部分</string>
     <string name="pref_dim_strength">压暗强度</string>
-    <string name="pref_dim_strength_summary" formatted="false">上滑时压暗区域的深浅：越大越黑（默认 57%），100% 纯黑、调低更通透；仅压暗模式生效</string>
+    <string name="pref_dim_strength_summary" formatted="false">越大越暗</string>
     <string name="pref_glass_live">液态玻璃实时渲染弧形描边</string>
-    <string name="pref_glass_live_summary">把这条弧线交给系统原生液态玻璃：背景实时采样、折射、模糊、边缘高光全部跟着上滑动画走，不逐帧截屏</string>
+    <string name="pref_glass_live_summary">交给系统原生液态玻璃</string>
     <string name="pref_arc_width">描边宽度</string>
     <string name="pref_arc_width_summary">光边的粗细</string>
     <string name="pref_glass_thick">玻璃厚度</string>
-    <string name="pref_glass_thick_summary" formatted="false">玻璃带的粗细，与描边宽度完全独立：以弧线为轴对称加宽或收窄，白描边不受影响。1~40dp，默认 20dp，调大更有厚度与体积感</string>
+    <string name="pref_glass_thick_summary" formatted="false">玻璃带粗细，与描边宽度无关</string>
 
     <!-- 玻璃参数（独立二级页，1.0.22） -->
     <string name="pref_glass_page">玻璃参数</string>
-    <string name="pref_glass_page_summary">上滑玻璃的实时材质：漫反射 / 模糊 / 折射 / 菲涅尔 / 高光 / 不透明度 / 厚度</string>
+    <string name="pref_glass_page_summary">漫反射、模糊、折射与高光</string>
     <string name="pref_glass_page_off">玻璃当前未开启，本页参数不会生效。开关在 参数 → 玻璃 → 液态玻璃实时渲染弧形描边。</string>
     <!-- 上滑背景模糊（1.0.22） -->
     <string name="group_blur">模糊</string>
     <string name="pref_blur_on">背景模糊</string>
     <string name="pref_blur_on_summary">上滑时模糊底层背景</string>
     <string name="pref_blur_strength">模糊程度</string>
-    <string name="pref_blur_strength_summary" formatted="false">背景越高越糊（默认 70%），随上滑进度从清晰连续渐强</string>
+    <string name="pref_blur_strength_summary" formatted="false">越大越糊</string>
     <string name="group_glass">玻璃</string>
     <string name="group_glass_mat">玻璃材质</string>
     <string name="group_glass_refract">折射</string>
@@ -117,28 +117,28 @@
     <string name="group_glass_reset">重置与说明</string>
 
     <string name="pref_glass_opacity">玻璃不透明度</string>
-    <string name="pref_glass_opacity_summary">玻璃带的总体浓度。全程恒定，不随上滑进度淡入淡出</string>
+    <string name="pref_glass_opacity_summary">总体浓度，不随上滑进度变化</string>
     <string name="pref_glass_diffuse">漫反射</string>
-    <string name="pref_glass_diffuse_summary">玻璃被背景照亮多少：取色来自远景模糊与场景亮度，不是固定的白</string>
+    <string name="pref_glass_diffuse_summary">被背景照亮的程度，取色来自场景</string>
     <string name="pref_glass_blur">背景模糊</string>
-    <string name="pref_glass_blur_summary">带中线最糊、靠边收窄做出厚度；调太大折射会被抹平，只剩磨砂</string>
+    <string name="pref_glass_blur_summary">带中线最糊，靠边收窄做出厚度</string>
     <string name="pref_glass_refract">折射强度</string>
-    <string name="pref_glass_refract_summary">背景穿过玻璃时被掰弯的幅度，上限 0.90，再高背景会对折出重复纹理</string>
+    <string name="pref_glass_refract_summary">背景穿过玻璃被掰弯的幅度，上限 0.90</string>
     <string name="pref_glass_edge_ref">边缘折射</string>
-    <string name="pref_glass_edge_ref_summary">越靠弧线掰得越狠的那部分，上限 0.50，与折射强度成对、不能同时拉满</string>
+    <string name="pref_glass_edge_ref_summary">越靠弧线掰得越狠，上限 0.50</string>
     <string name="pref_glass_refract_w">折射范围</string>
-    <string name="pref_glass_refract_w_summary">折射集中在最外圈，还是铺满整个玻璃带</string>
+    <string name="pref_glass_refract_w_summary">折射集中在外圈还是铺满整条</string>
     <string name="pref_glass_fresnel">菲涅尔</string>
-    <string name="pref_glass_fresnel_summary">掠射角越强的反光：让边缘比中心更亮，更接近真玻璃</string>
+    <string name="pref_glass_fresnel_summary">掠射角反光，边缘比中心亮</string>
     <string name="pref_glass_highlight">边缘高光</string>
-    <string name="pref_glass_highlight_summary">外缘细亮线的强度；实际亮度跟着背景明暗走，不是一片死白</string>
+    <string name="pref_glass_highlight_summary">外缘细亮线的强度</string>
     <string name="pref_glass_hl_width">高光宽度</string>
-    <string name="pref_glass_hl_width_summary">高光铺开的宽窄：调大是一整片柔和反光，调小是一条细亮线</string>
+    <string name="pref_glass_hl_width_summary">高光铺开的宽窄</string>
     <string name="pref_glass_reset">恢复默认参数</string>
     <string name="pref_glass_note">折射强度与边缘折射的上限是成对的安全线：同时拉满时采样恰好不折叠，再放宽背景就会出现重复或幽灵纹理。想更通透优先加大玻璃厚度，它不占这条线。</string>
     <string name="pref_glass_const">玻璃强度全程恒定，不再跟随上滑进度从无到有地淡入；位置与液态流动仍然实时跟着手势走。</string>
     <string name="pref_arc_alpha">描边不透明度</string>
-    <string name="pref_arc_alpha_summary">整体亮度</string>
+    <string name="pref_arc_alpha_summary">光边的亮度</string>
     <string name="pref_arc_color">描边颜色</string>
     <string name="pref_arc_color_summary">点击打开取色器</string>
 
@@ -156,11 +156,11 @@
     <string name="hint_group_position">位置</string>
 
     <string name="pref_hint_text">文字内容</string>
-    <string name="pref_hint_text_summary">显示在小横条上方的一行小字，留空则不显示</string>
+    <string name="pref_hint_text_summary">留空则不显示</string>
     <string name="pref_hint_text_label">例如：上滑解锁</string>
 
     <string name="pref_hint_size">字体大小</string>
-    <string name="pref_hint_size_summary">小字的字号（sp）</string>
+    <string name="pref_hint_size_summary">小字字号（sp）</string>
     <string name="pref_hint_weight">字体粗细</string>
     <string name="pref_hint_weight_summary">100 最细，900 最粗</string>
     <string name="pref_hint_font">字体</string>
@@ -168,9 +168,9 @@
     <string name="pref_hint_color">文字颜色</string>
     <string name="pref_hint_color_summary">点击打开取色器</string>
     <string name="pref_hint_gap">与小横条的距离</string>
-    <string name="pref_hint_gap_summary">文字离底部小横条多远（dp）</string>
+    <string name="pref_hint_gap_summary">离底部小横条的距离（dp）</string>
     <string name="pref_hint_offset_x">水平偏移</string>
-    <string name="pref_hint_offset_x_summary">左右挪动文字，0 = 居中（dp）</string>
+    <string name="pref_hint_offset_x_summary">左右挪动文字，0 = 居中</string>
 
     <string name="font_default">系统默认</string>
     <string name="font_serif">衬线</string>
@@ -182,29 +182,29 @@
     <string name="group_appearance">外观</string>
     <string name="group_about">关于</string>
     <string name="settings_theme">主题设置</string>
-    <string name="settings_theme_summary">深浅色、动态取色、底栏样式</string>
+    <string name="settings_theme_summary">深浅色与底栏外观</string>
     <string name="settings_about">关于</string>
-    <string name="settings_about_summary">版本、作者</string>
+    <string name="settings_about_summary">版本与作者</string>
     <string name="settings_log">模块日志</string>
-    <string name="settings_log_summary">加载、作用域与 hook 安装记录，出问题先看这里</string>
+    <string name="settings_log_summary">hook 安装与运行记录</string>
 
     <!-- 主题设置（搬 KernelSU 主题设置页，名字换成本模块的） -->
     <string name="theme_mode_system">系统</string>
     <string name="theme_mode_light">浅色</string>
     <string name="theme_mode_dark">深色</string>
     <string name="theme_dynamic">动态取色</string>
-    <string name="theme_dynamic_summary">按壁纸 / 关键色生成整套配色</string>
+    <string name="theme_dynamic_summary">按壁纸或关键色取色</string>
     <string name="theme_key_color">关键色</string>
     <string name="theme_color_style">色彩风格</string>
     <string name="theme_color_spec">色彩规范</string>
     <string name="theme_spec_2021">2021 规范</string>
     <string name="theme_spec_2025">2025 规范</string>
     <string name="theme_blur">模糊效果</string>
-    <string name="theme_blur_summary">给底栏开磨砂玻璃，需要设备支持运行时着色</string>
+    <string name="theme_blur_summary">底栏磨砂玻璃</string>
     <string name="theme_floating">浮动底栏</string>
-    <string name="theme_floating_summary">底栏改成悬浮胶囊；关掉是贴底整条</string>
+    <string name="theme_floating_summary">悬浮胶囊底栏</string>
     <string name="theme_glass">玻璃效果</string>
-    <string name="theme_glass_summary">浮动底栏走真模糊 + 边缘高光</string>
+    <string name="theme_glass_summary">真模糊 + 边缘高光</string>
     <string name="theme_preview">预览</string>
 
     <!-- 关于 -->
@@ -219,15 +219,15 @@
     <string name="about_framework">框架</string>
     <string name="about_framework_value">LSPosed (libxposed API 102)</string>
     <string name="about_module">模块信息</string>
-    <string name="about_module_summary">锁屏上滑联动与屏幕圆角弧光</string>
+    <string name="about_module_summary">锁屏上滑联动与弧光</string>
 
     <!-- 关于页：访问本项目仓库（卡片放在「引用与致谢」入口正上方） -->
     <string name="about_project">访问该项目</string>
-    <string name="about_project_summary">打开本模块的 GitHub 仓库，查看更新日志、反馈问题与源码</string>
+    <string name="about_project_summary">打开 GitHub 仓库</string>
 
     <!-- 引用与致谢（关于页 → 引用与致谢，二级页） -->
     <string name="about_credits">引用与致谢</string>
-    <string name="about_credits_summary">本模块引用的开源项目与设计参考</string>
+    <string name="about_credits_summary">引用的开源项目与参考</string>
     <string name="credits_title">引用与致谢</string>
     <string name="credits_group_dep">代码依赖</string>
     <string name="credits_group_ref">设计与实现参考</string>
@@ -262,14 +262,22 @@
     <string name="safety_mode_exit">退出安全模式</string>
     <string name="safety_mode_exit_hint">退出后需重启系统界面，hook 才会重新安装</string>
     <string name="safety_mode_exit_done">已请求退出，请重启系统界面</string>
+    <string name="group_safety">安全模式</string>
+    <string name="settings_safety_disabled">禁用安全模式</string>
+    <string name="settings_safety_disabled_summary">崩溃循环时也不停用模块</string>
+    <string name="safety_mode_active_card_summary">本模块已停止安装 hook，关掉开关并重启系统界面恢复。</string>
+    <string name="pref_top_right_handle">锁屏右上方小白条</string>
+    <string name="pref_top_right_handle_summary">下拉打开控制中心，并屏蔽系统右缘下拉</string>
+    <string name="pref_top_right_handle_params">小白条参数</string>
+    <string name="pref_top_right_handle_params_summary">长度、粗细、位置与弹性</string>
 
     <!-- 模块日志页 -->
     <string name="log_title">模块日志</string>
     <string name="log_group_env">环境</string>
     <string name="log_service_ok">LSPosed 服务已连接</string>
-    <string name="log_service_ok_summary">模块与框架通信正常，日志会持续更新</string>
+    <string name="log_service_ok_summary">通信正常</string>
     <string name="log_service_missing">LSPosed 服务未连接</string>
-    <string name="log_service_missing_summary">请在 LSPosed 中启用本模块，或重启手机后重试</string>
+    <string name="log_service_missing_summary">请在 LSPosed 中启用本模块</string>
     <string name="log_lines_label">日志条数</string>
     <string name="log_lines_value">%1$d 条</string>
     <string name="log_empty_short">暂无</string>
@@ -282,4 +290,15 @@
     <string name="log_export_hint">导出为 txt 存入「下载」，并自动弹出分享面板</string>
     <string name="log_clear">清空日志</string>
     <string name="log_empty">还没有日志。\n\n请依次确认：\n1. LSPosed 中已启用本模块\n2. 作用域勾选了「系统界面」(com.android.systemui)\n3. 重启系统界面或重启手机\n\n三项都确认过仍为空，请到 LSPosed 的日志页查看。</string>
+    <string name="group_lock_widget">锁屏小组件</string>
+    <string name="pref_lock_widget">锁屏小组件</string>
+    <string name="pref_lock_widget_summary">时钟下方显示天气、步数与电量</string>
+    <string name="pref_lock_widget_params">锁屏小组件参数</string>
+    <string name="pref_lock_widget_params_summary">大小与位置</string>
+    <string name="pref_lock_widget_shrink_clock">时钟自动避让</string>
+    <string name="pref_lock_widget_shrink_clock_summary">小组件占位时时钟自动缩小</string>
+    <string name="pref_lock_widget_follow">跟随上滑</string>
+    <string name="pref_lock_widget_follow_summary">上滑时组件跟锁屏内容一起移动</string>
+    <string name="settings_hide_launcher">隐藏桌面图标</string>
+    <string name="settings_hide_launcher_summary">之后从 LSPosed 的模块页打开</string>
 </resources>

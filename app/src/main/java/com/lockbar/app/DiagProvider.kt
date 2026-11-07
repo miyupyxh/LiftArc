@@ -99,6 +99,8 @@ class DiagProvider : ContentProvider() {
             Prefs.KEY_DEBUG_VIEWS,
             Prefs.KEY_DEBUG_BLOCK,
             Prefs.KEY_DEBUG_LOG,
+            // 锁屏状态栏 / 信号塔几何：参数页预览按真机位置渲染
+            Prefs.KEY_DEBUG_LAYOUT,
             // 安全模式标志：首页据此决定要不要显示「退出安全模式」按钮
             Prefs.KEY_DEBUG_SAFETY,
         )

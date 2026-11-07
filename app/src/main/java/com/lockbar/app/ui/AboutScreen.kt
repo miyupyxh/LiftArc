@@ -183,7 +183,7 @@ internal fun AboutScreen(onBack: () -> Unit, onOpenCredits: () -> Unit) {
                     AboutNavRow(
                         icon = Icons.Rounded.Public,
                         title = stringResource(R.string.about_project),
-                        summary = stringResource(R.string.about_project_summary),
+                        summary = optSummary(R.string.about_project_summary),
                         // 手机上没装浏览器 / 链接失效都不该让页面崩掉
                         onClick = { runCatching { uriHandler.openUri(PROJECT_URL) } },
                     )
@@ -195,7 +195,7 @@ internal fun AboutScreen(onBack: () -> Unit, onOpenCredits: () -> Unit) {
                     AboutNavRow(
                         icon = Icons.Rounded.FormatQuote,
                         title = stringResource(R.string.about_credits),
-                        summary = stringResource(R.string.about_credits_summary),
+                        summary = optSummary(R.string.about_credits_summary),
                         onClick = onOpenCredits,
                     )
                 }
@@ -240,7 +240,7 @@ private fun AboutRow(icon: ImageVector, title: String, value: String) {
  * 点击涟漪走 MiuixTheme 提供的 `LocalIndication`，和设置页里的偏好项手感一致。
  */
 @Composable
-private fun AboutNavRow(icon: ImageVector, title: String, summary: String, onClick: () -> Unit) {
+private fun AboutNavRow(icon: ImageVector, title: String, summary: String?, onClick: () -> Unit) {
     val colorScheme = MiuixTheme.colorScheme
     val textStyles = MiuixTheme.textStyles
     Row(
@@ -263,11 +263,13 @@ private fun AboutNavRow(icon: ImageVector, title: String, summary: String, onCli
                 style = textStyles.main,
                 color = colorScheme.onBackground,
             )
-            Text(
-                text = summary,
-                style = textStyles.footnote2,
-                color = colorScheme.onSurfaceVariantSummary,
-            )
+            if (!summary.isNullOrBlank()) {
+                Text(
+                    text = summary,
+                    style = textStyles.footnote2,
+                    color = colorScheme.onSurfaceVariantSummary,
+                )
+            }
         }
         Spacer(Modifier.width(8.dp))
         Icon(

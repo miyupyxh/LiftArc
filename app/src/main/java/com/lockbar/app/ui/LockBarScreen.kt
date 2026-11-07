@@ -128,6 +128,10 @@ private const val ROUTE_LOG = "log"
 
 /** 「玻璃参数」页：实时液态玻璃的九个旋钮 + 玻璃厚度（1.0.22）。 */
 private const val ROUTE_GLASS = "glass"
+/** 「锁屏右上方小白条」参数页。 */
+private const val ROUTE_TOP_RIGHT = "top_right"
+/** 「锁屏小组件」参数页（天气 / 步数 / 电池）。 */
+private const val ROUTE_LOCK_WIDGET = "lock_widget"
 
 /** 二级页面的路由 key（KernelSU 同款：交给 miuix-nav 的 [NavDisplay] 渲染）。 */
 private sealed interface Route : NavKey {
@@ -138,6 +142,8 @@ private sealed interface Route : NavKey {
     data object Credits : Route
     data object Log : Route
     data object Glass : Route
+    data object TopRight : Route
+    data object LockWidget : Route
 }
 
 /**
@@ -173,6 +179,8 @@ fun LockBarScreen() {
                             ROUTE_ABOUT -> backStack.add(Route.About)
                             ROUTE_LOG -> backStack.add(Route.Log)
                             ROUTE_GLASS -> backStack.add(Route.Glass)
+                            ROUTE_TOP_RIGHT -> backStack.add(Route.TopRight)
+                            ROUTE_LOCK_WIDGET -> backStack.add(Route.LockWidget)
                         }
                     },
                 )
@@ -180,6 +188,8 @@ fun LockBarScreen() {
             entry<Route.Hint> { HintTextScreen(onBack = { backStack.removeLastOrNull() }) }
             // 玻璃参数：实时材质的九个旋钮（漫反射 / 模糊 / 折射 / 菲涅尔 / 高光 / 不透明度 …）
             entry<Route.Glass> { GlassScreen(onBack = { backStack.removeLastOrNull() }) }
+            entry<Route.TopRight> { TopRightHandleScreen(onBack = { backStack.removeLastOrNull() }) }
+            entry<Route.LockWidget> { LockWidgetScreen(onBack = { backStack.removeLastOrNull() }) }
             entry<Route.Theme> { ThemeSettingsScreen(onBack = { backStack.removeLastOrNull() }) }
             // 关于页 → 引用与致谢：三层页，push 进去返回键/侧滑由 NavDisplay 自己接管
             entry<Route.About> {
@@ -592,7 +602,7 @@ private fun HintTextScreen(onBack: () -> Unit) {
                 GroupCard(title = stringResource(R.string.hint_group_style)) {
                     NumSliderPreference(
                         title = stringResource(R.string.pref_hint_size),
-                        summary = stringResource(R.string.pref_hint_size_summary),
+                        summary = optSummary(R.string.pref_hint_size_summary),
                         startAction = { PrefIcon(Icons.Rounded.Tune) },
                         value = hintSize,
                         onValueChange = { hintSize = it.coerceIn(6f, 40f) },
@@ -603,7 +613,7 @@ private fun HintTextScreen(onBack: () -> Unit) {
                     )
                     NumSliderPreference(
                         title = stringResource(R.string.pref_hint_weight),
-                        summary = stringResource(R.string.pref_hint_weight_summary),
+                        summary = optSummary(R.string.pref_hint_weight_summary),
                         startAction = { PrefIcon(Icons.Rounded.Tune) },
                         // 字重在远端配置里存的是 Int，value / onValueChange 都在这一层转，
                         // 存储类型一个字都不能改（换 float 会让 LockConfig 读取抛异常）
@@ -615,7 +625,7 @@ private fun HintTextScreen(onBack: () -> Unit) {
                     )
                     OverlayDropdownPreference(
                         title = stringResource(R.string.pref_hint_font),
-                        summary = stringResource(R.string.pref_hint_font_summary),
+                        summary = optSummary(R.string.pref_hint_font_summary),
                         startAction = { PrefIcon(Icons.Rounded.TextFields) },
                         items = fontNames,
                         selectedIndex = hintFont,
@@ -623,7 +633,7 @@ private fun HintTextScreen(onBack: () -> Unit) {
                     )
                     ArrowPreference(
                         title = stringResource(R.string.pref_hint_color),
-                        summary = stringResource(R.string.pref_hint_color_summary) + " · " + hexOf(hintColorValue),
+                        summary = hexOf(hintColorValue),
                         startAction = { PrefIcon(Icons.Rounded.ColorLens) },
                         onClick = {
                             pendingHintColor = hintColorValue
@@ -644,7 +654,7 @@ private fun HintTextScreen(onBack: () -> Unit) {
                 GroupCard(title = stringResource(R.string.hint_group_position)) {
                     NumSliderPreference(
                         title = stringResource(R.string.pref_hint_gap),
-                        summary = stringResource(R.string.pref_hint_gap_summary),
+                        summary = optSummary(R.string.pref_hint_gap_summary),
                         startAction = { PrefIcon(Icons.Rounded.Swipe) },
                         value = hintGap,
                         onValueChange = { hintGap = it.coerceIn(0f, 96f) },
@@ -654,7 +664,7 @@ private fun HintTextScreen(onBack: () -> Unit) {
                     )
                     NumSliderPreference(
                         title = stringResource(R.string.pref_hint_offset_x),
-                        summary = stringResource(R.string.pref_hint_offset_x_summary),
+                        summary = optSummary(R.string.pref_hint_offset_x_summary),
                         startAction = { PrefIcon(Icons.Rounded.Swipe) },
                         value = hintOffsetX,
                         onValueChange = { hintOffsetX = it.coerceIn(-120f, 120f) },
@@ -819,51 +829,14 @@ internal fun Modifier.pageScroll(scrollBehavior: ScrollBehavior): Modifier =
     fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection)
 
 /**
- * 安全模式卡：显示安全模式状态与「退出安全模式」按钮。
+ * 副文本：**留空即整行不渲染**。
  *
- * **平时整张卡不渲染**，只有进入安全模式才出现 —— 这张卡是全 App 唯一能找到退出按钮的地方，
- * 所以它必须留在参数页底部，不能连着诊断内容一起删。
- *
- * 原先这里还有「运行状态」与「上滑 35% 视图树快照」两块诊断，已按需求移除；
- * [rememberDebugInfo] 仍照常轮询，因为安全模式的正文就存在 `debug_status` 里。
+ * <p>标题已经说清楚的条目（长度 / 粗细 / 位置…）不该再补一句话 ——
+ * 空串在 miuix 里仍会占一行，所以统一在 `strings.xml` 里把它写成空，
+ * 由这里转成 `null` 交给 `BasicComponent` 收掉那一行。想加回说明只改字符串即可。
  */
 @Composable
-internal fun DebugCard() {
-    val info = rememberDebugInfo()
-    val safe = rememberSafety()
-    if (!safe) {
-        return
-    }
-    GroupCard(title = stringResource(R.string.group_debug)) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        ) {
-            Text(
-                text = stringResource(R.string.safety_mode_title),
-                style = MiuixTheme.textStyles.subtitle,
-                color = MiuixTheme.colorScheme.onBackground,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = info.first.ifBlank { stringResource(R.string.safety_mode_hint) },
-                style = MiuixTheme.textStyles.footnote2,
-                color = MiuixTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-            )
-            Spacer(Modifier.height(12.dp))
-            Button(onClick = { requestSafetyExit() }) {
-                Text(stringResource(R.string.safety_mode_exit))
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = stringResource(R.string.safety_mode_exit_hint),
-                style = MiuixTheme.textStyles.footnote2,
-                color = MiuixTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-            )
-        }
-    }
-}
+internal fun optSummary(id: Int): String? = stringResource(id).ifBlank { null }
 
 // ------------------------------------------------------------------------- 配置记忆
 

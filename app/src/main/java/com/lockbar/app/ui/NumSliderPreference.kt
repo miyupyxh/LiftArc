@@ -96,7 +96,8 @@ internal fun NumSliderPreference(
     defaultValue: Float,
     valueRange: ClosedFloatingPointRange<Float>,
     title: String,
-    summary: String,
+    /** 副文本；`null` = 不显示这一行（标题已经说清楚参数的，就别再补一句话）。 */
+    summary: String? = null,
     startAction: @Composable () -> Unit,
     /** 单位原文，紧跟数值：`"%"` → 85%、`" dp"` → 3 dp；空串则不显示也不占位。 */
     unit: String = "",

@@ -3,6 +3,7 @@ package com.lockbar.app.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,12 +16,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircleOutline
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Tag
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,13 +54,14 @@ internal fun HomePage(
     scrollBehavior: ScrollBehavior,
 ) {
     val activated = rememberServiceBound()
+    val safe = rememberSafety()
 
     LazyColumn(
         modifier = Modifier.pageScroll(scrollBehavior),
         contentPadding = pagePadding(innerPadding, bottomBarHeight),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item { StatusCard(activated) }
+        item { StatusCard(activated, safe) }
         item { ModuleInfoCard(activated) }
         item { IntroCard() }
     }
@@ -65,12 +70,12 @@ internal fun HomePage(
 // ---------------------------------------------------------------- 状态大绿框
 
 /**
- * 模块激活状态卡：KernelSU 首页那张大绿框 + 右下角对勾。
+ * 模块激活状态卡：仿 KernelSU 首页大卡 —— 右下角大图标 + 左上角标题。
  *
- * 未激活时换成同结构的红色框，避免“看起来激活了其实没激活”。
+ * 绿框=已激活（对勾）；红框=未激活（错误图标）；安全模式=红框 + 叉号 + 红色退出按钮。
  */
 @Composable
-private fun StatusCard(activated: Boolean) {
+private fun StatusCard(activated: Boolean, safe: Boolean) {
     val colorScheme = MiuixTheme.colorScheme
     val dynamic = MiuixTheme.isDynamicColor
     val dark = isDarkTheme()
@@ -80,6 +85,27 @@ private fun StatusCard(activated: Boolean) {
     val titleColor: Color
     val summaryColor: Color
     when {
+        safe && dynamic -> {
+            container = colorScheme.errorContainer
+            iconTint = colorScheme.error
+            titleColor = colorScheme.onErrorContainer
+            summaryColor = colorScheme.onErrorContainer.copy(alpha = 0.75f)
+        }
+
+        safe && dark -> {
+            container = Color(0xFF3A1F21)
+            iconTint = Color(0xFFF0736A)
+            titleColor = Color(0xFFFFECEA)
+            summaryColor = Color(0xFFF3C4C0)
+        }
+
+        safe -> {
+            container = Color(0xFFFCE9E7)
+            iconTint = Color(0xFFE94634)
+            titleColor = Color(0xFF3A1512)
+            summaryColor = Color(0xFF7A3B36)
+        }
+
         activated && dynamic -> {
             container = colorScheme.secondaryContainer
             iconTint = colorScheme.primary.copy(alpha = 0.8f)
@@ -130,30 +156,43 @@ private fun StatusCard(activated: Boolean) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(132.dp),
+                .height(IntrinsicSize.Min),
         ) {
-            Icon(
-                imageVector = if (activated) Icons.Rounded.CheckCircleOutline else Icons.Rounded.ErrorOutline,
-                contentDescription = if (activated) {
-                    stringResource(R.string.status_activated)
-                } else {
-                    stringResource(R.string.status_not_activated)
-                },
-                tint = iconTint,
+            // KernelSU 式右下角大图标：略超出底角，压在卡片右下
+            Box(
                 modifier = Modifier
-                    .size(104.dp)
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 12.dp, bottom = 12.dp),
-            )
+                    .fillMaxSize()
+                    .offset(27.dp, 31.dp),
+                contentAlignment = Alignment.BottomEnd,
+            ) {
+                Icon(
+                    imageVector = when {
+                        safe -> Icons.Rounded.Close
+                        activated -> Icons.Rounded.CheckCircleOutline
+                        else -> Icons.Rounded.ErrorOutline
+                    },
+                    contentDescription = when {
+                        safe -> stringResource(R.string.safety_mode_title)
+                        activated -> stringResource(R.string.status_activated)
+                        else -> stringResource(R.string.status_not_activated)
+                    },
+                    tint = iconTint,
+                    modifier = Modifier.size(110.dp),
+                )
+            }
 
             Column(
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 18.dp, top = 16.dp, end = 96.dp),
+                    .fillMaxSize()
+                    .padding(start = 18.dp, top = 16.dp, end = 92.dp, bottom = 16.dp),
             ) {
                 Text(
-                    text = stringResource(if (activated) R.string.status_activated else R.string.status_not_activated),
-                    fontSize = 24.sp,
+                    text = when {
+                        safe -> stringResource(R.string.safety_mode_title)
+                        activated -> stringResource(R.string.status_activated)
+                        else -> stringResource(R.string.status_not_activated)
+                    },
+                    fontSize = 22.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = titleColor,
                 )
@@ -168,15 +207,30 @@ private fun StatusCard(activated: Boolean) {
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = if (activated) {
-                        stringResource(R.string.status_activated_summary)
-                    } else {
-                        stringResource(R.string.status_not_activated_summary)
+                    text = when {
+                        safe -> stringResource(R.string.safety_mode_active_card_summary)
+                        activated -> stringResource(R.string.status_activated_summary)
+                        else -> stringResource(R.string.status_not_activated_summary)
                     },
                     fontSize = 13.sp,
                     lineHeight = 17.sp,
                     color = summaryColor.copy(alpha = 0.85f),
                 )
+                if (safe) {
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = { requestSafetyExit() },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFE94634),
+                            contentColor = Color.White,
+                        ),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.safety_mode_exit),
+                            color = Color.White,
+                        )
+                    }
+                }
             }
         }
     }

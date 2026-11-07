@@ -129,12 +129,65 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     private final XposedInterface module;
 
     private FrameLayout overlay;
+    /** 组件专用图层：插在锁屏内容之下，通知/时钟自然盖在它上面。 */
+    private FrameLayout widgetLayer;
     private LockRimView rim;
     /** 液态玻璃描边条（设置项「液态玻璃实时渲染弧形描边」，1.0.22）。 */
     private LockGlassStrip strip;
     private LockHandleView handle;
     /** 小白条上方的自定义文字（配置 hint_text 为空时不显示）。 */
     private TextView hint;
+    /** 锁屏右上方小白条（下拉打开控制中心）。 */
+    private View topRightBar;
+    private float topRightBarBaseY = Float.NaN;
+    private boolean topRightBarPullActive;
+    private float topRightBarDownY;
+    /** 锁屏右边缘下拉控制中心的系统手势是否被我们屏蔽。 */
+    private boolean blockCcEdgePull;
+    /** 上次启动右缘拦截的时刻：防止标志残留到解锁后。 */
+    private long blockCcEdgeAt;
+    /** 右半屏顶部按下：可能是右缘下拉控制中心，等它真的向下滑再拦。 */
+    private boolean ccEdgeCandidate;
+    /** 控制中心是不是由右上方小白条打开的（区分系统右缘下拉）。 */
+    private boolean topRightHandleOpenedCc;
+
+    /** 锁屏小组件（天气 / 步数 / 电池 三选一的单件）。 */
+    private LockWidgetView lockWidgets;
+    /** 上一次拉取小组件数据的时刻（ms，uptime）。 */
+    private long lastWidgetDataAt;
+    private long lastWidgetLog;
+    /** 正在后台拉数据：避免叠加查询。 */
+    private boolean widgetDataLoading;
+    /** 被缩小的时钟内容容器（blur_blend_container）。 */
+    private View clockScaleA;
+    private View clockScaleB;
+    private float clockShrinkNow = 1f;
+    /** 通知堆叠容器缓存（每次 sync 都遍历整个窗口太贵）。 */
+    private View notifStackCache;
+    private long notifStackAt;
+    /** 摆位节流：同一帧里反复计算没意义。 */
+    private long lastPositionAt;
+    /** 锁屏页面当前的整体位移（与 keyguardRoot 同一个 ty）。 */
+    private float pageTy;
+    /** 避让通知产生的额外位移（带动画，避免硬跳）。 */
+    private float widgetExtra;
+    /** 通知整体的额外位移（负数 = 上移）：小组件占到通知区时把通知顶上去。 */
+    private float notifExtra;
+    /** 我们是否曾经向系统容器写过非 0 平移（用于只归还一次）。 */
+    private boolean sharedNotifOwned;
+    private boolean panelOwned;
+    /** 上次量到的通知卡片数（用来决定上移量上限）。 */
+    private int notifCardCount;
+    private android.animation.ValueAnimator notifExtraAnim;
+    private android.animation.ValueAnimator widgetExtraAnim;
+    /** 时钟当前是否处于被压短状态（做回差，避免反复抖）。 */
+    private boolean clockShrunk;
+
+    /** 电池/插拔电广播：让小组件实时刷新（不再等 30s 节流）。 */
+    private android.content.BroadcastReceiver widgetReceiver;
+
+    /** 小组件数据的刷新间隔（ms）：天气 / 步数都是分钟级数据，30 秒足够。 */
+    private static final long WIDGET_DATA_MS = 30_000L;
 
     private View keyguardRoot;
     private View sharedNotif;
@@ -567,9 +620,46 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                 disarmFpResult();
                 // 上一次手势如果还悬着（回弹中途又按下），先把时间放回原位
                 clearLift();
+                // 锁屏右上方小白条 / 右缘控制中心屏蔽
+                topRightBarPullActive = false;
+                blockCcEdgePull = false;
+                ccEdgeCandidate = false;
+                if (config.topRightHandle && sKeyguardState != 0
+                        && overlay != null && overlay.getVisibility() == View.VISIBLE) {
+                    if (inTopRightBar(downX, downY)) {
+                        topRightBarPullActive = true;
+                        topRightBarDownY = downY;
+                        topRightBarBaseY = topRightBar.getTranslationY();
+                    } else if (window.getWidth() > 0 && window.getHeight() > 0
+                            && downX > window.getWidth() * 0.5f
+                            && downY < window.getHeight() * 0.45f) {
+                        // 右半屏顶部按下：可能是右缘下拉控制中心。等它真的向下滑再拦，
+                        // 避免把底部解锁上滑（右半屏往上划）也吞掉。
+                        ccEdgeCandidate = true;
+                        ModuleLog.d("锁屏右上方小白条：右缘候选 @"
+                                + Math.round(downX) + "," + Math.round(downY));
+                    }
+                }
                 return TOUCH_PASS;
 
             case MotionEvent.ACTION_MOVE: {
+                if (topRightBarPullActive) {
+                    float dy = ev.getY() - topRightBarDownY;
+                    if (dy > 0f) {
+                        // 弹性跟手：位移按配置倍率，松手再回弹
+                        topRightBar.setTranslationY(topRightBarBaseY + dy * config.topRightBarElastic);
+                    }
+                    return TOUCH_SWALLOW;
+                }
+                if (!blockCcEdgePull && ccEdgeCandidate
+                        && (ev.getY() - downY) > touchSlop()) {
+                    blockCcEdgePull = true;
+                    blockCcEdgeAt = SystemClock.uptimeMillis();
+                    ModuleLog.d("锁屏右上方小白条：开始拦截右缘下拉控制中心");
+                }
+                if (blockCcEdgePull) {
+                    return TOUCH_SWALLOW;    // 吞掉右缘下拉，系统控制中心不开
+                }
                 if (downInHandle) {
                     return TOUCH_PASS;
                 }
@@ -595,6 +685,29 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
+                if (topRightBarPullActive) {
+                    topRightBarPullActive = false;
+                    float dy = ev.getY() - topRightBarDownY;
+                    // 弹性归位
+                    if (topRightBar != null) {
+                        topRightBar.animate().cancel();
+                        topRightBar.animate().translationY(0f)
+                                .setDuration(280L)
+                                .setInterpolator(new android.view.animation.OvershootInterpolator(1.6f))
+                                .start();
+                    }
+                    if (dy > 120f * density()) {
+                        topRightHandleOpenedCc = true;
+                        LockBarHooks.openControlCenter();
+                    }
+                    return TOUCH_SWALLOW;
+                }
+                if (blockCcEdgePull) {
+                    blockCcEdgePull = false;
+                    ccEdgeCandidate = false;
+                    return TOUCH_PASS;
+                }
+                ccEdgeCandidate = false;
                 if (liftTracking) {
                     liftTracking = false;
                     fingerRising = false;   // 手离屏：这条屏内上滑到此为止，指纹恢复
@@ -632,7 +745,797 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         return touchSlop;
     }
 
-    /** 落点是否在小白条触控区（含跟随上移的 translationY）。 */
+    private float density() {
+        return window.getResources().getDisplayMetrics().density;
+    }
+
+    /** 落点是否在锁屏右上方小白条的触控区（含 20dp 外扩）。 */
+    private boolean inTopRightBar(float x, float y) {
+        if (topRightBar == null || topRightBar.getVisibility() != View.VISIBLE) {
+            return false;
+        }
+        int[] loc = new int[2];
+        topRightBar.getLocationInWindow(loc);
+        float pad = 20f * density();
+        float left = loc[0] - pad;
+        float top = loc[1] - pad;
+        float right = loc[0] + topRightBar.getWidth() + pad;
+        float bottom = loc[1] + topRightBar.getHeight() + pad;
+        return x >= left && x <= right && y >= top && y <= bottom;
+    }
+
+    /** 按配置刷新右上方小白条尺寸与位置；能找到锁屏状态栏就垂直跟随它。 */
+    private void positionTopRightBar() {
+        if (topRightBar == null) {
+            return;
+        }
+        float d = density();
+        int y = (int) (config.topRightBarY * d);
+        View sb = find("keyguard_status_bar");
+        if (sb != null && sb.getVisibility() == View.VISIBLE && sb.getHeight() > 0) {
+            int[] loc = new int[2];
+            sb.getLocationInWindow(loc);
+            // 跟随状态栏：Y 变成「相对状态栏顶部的偏移」
+            y = loc[1] + (int) (config.topRightBarY * d);
+        }
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) topRightBar.getLayoutParams();
+        lp.width = Math.max(1, (int) (config.topRightBarLength * d));
+        lp.height = Math.max(1, (int) (config.topRightBarThickness * d));
+        lp.rightMargin = (int) (config.topRightBarX * d);
+        lp.topMargin = y;
+        topRightBar.setLayoutParams(lp);
+        topRightBar.setAlpha(config.topRightBarOpacity);
+    }
+
+    // ------------------------------------------------------------ 锁屏小组件（三选一）
+
+    /**
+     * 摆位：锚在「时钟看得见的那部分」的底边 + 配置下移量，水平居中。
+     *
+     * <p>不用时钟容器的 bottom —— 那玩意儿在本 ROM 是整屏大容器，直接取 bottom 会把小组件
+     * 甩到屏幕最下面（压到勿扰模式那排上，上一版就是这么翻车的）。所以先找时钟里真正有内容的
+     * 子视图的底边；实在找不到才退到屏幕 30% 处，并且整体夹在 15%~55% 屏高之间兜底。
+     */
+    /**
+     * 摆位：节流 120ms，并且只在“真正变化”时重算 / 重设布局。
+     *
+     * <p>这个方法跑在 sync() 里，而 sync 在滑动、通知变化、屏幕亮灭时都会调；
+     * 每次都遍历时钟+通知子树会直接掉帧。
+     */
+    private void positionLockWidgets() {
+        positionLockWidgets(false);
+    }
+
+    private void positionLockWidgets(boolean force) {
+        if (lockWidgets == null) {
+            return;
+        }
+        // 手势进行中不碰布局
+        if (lift != 0f || progress != 0f) {
+            return;
+        }
+        long now = SystemClock.uptimeMillis();
+        if (!force && now - lastPositionAt < 300L) {
+            return;
+        }
+        lastPositionAt = now;
+
+        float d = density();
+        int widgetH = Math.round(config.lockWidgetSize * d);
+        int offset = (int) (config.lockWidgetY * d);
+        int gap = (int) (8f * d);
+
+        int clockTop = clockContentTop();
+        int clockBottom = clockContentBottom();
+        int notifTop = notificationTop();
+
+        // 不再压短时钟（之前那套无论有没有通知都在缩，就是你说的「始终缩小」）。
+        applyClockShrink(1f);
+        if (clockShrinkNow < 0.999f) {
+            clockBottom = clockContentBottom();
+        }
+
+        lockWidgets.setTranslationX(config.lockWidgetX * d);
+
+        int y = clockBottom + offset;
+        y = Math.max(0, Math.min(Math.max(0, window.getHeight() - widgetH), y));
+
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) lockWidgets.getLayoutParams();
+        if (lp.topMargin != y) {
+            lp.topMargin = y;
+            lockWidgets.setLayoutParams(lp);
+        }
+        updateWidgetGlassOrigin();
+        updateNotifOffset(y, widgetH, clockTop, gap);
+        if (now - lastWidgetLog > 20000L) {
+            lastWidgetLog = now;
+            ModuleLog.d("widget y=" + y + " clock=" + clockTop + ".." + clockBottom
+                    + " h=" + widgetH + " z=" + widgetZIndex()
+                    + " glass=" + lockWidgets.diag());
+        }
+    }
+
+    /**
+     * 按小组件占位决定通知要不要上移。
+     *
+     * <p>规则（取自你的要求）：
+     * 小组件在下方、且占到了通知区 → 通知整体上移到小组件上面；
+     * 小组件在上方（不影响通知）或面板已展开 → 通知不动。
+     */
+    private void updateNotifOffset(int widgetTop, int widgetH, int clockTop, int gap) {
+        float wanted = 0f;
+        int measured = notificationTop();
+        if (measured != Integer.MAX_VALUE) {
+            // notificationTop() 已经返回“未平移”的基准坐标
+            int baseTop = measured;
+            // 堆叠展开后卡片会跑到屏幕上部：这时不上移，
+            // 让通知回到原位（阈值取 32% 屏高，涵盖展开后的堆叠卡片）
+            boolean expanded = baseTop < (int) (window.getHeight() * 0.32f);
+            if (!expanded) {
+                int widgetBottom = widgetTop + widgetH;
+                int overlap = widgetBottom + gap - baseTop;
+                if (overlap > 0) {
+                    // 多条通知时整列一起上移会看着太多，
+                    // 上移量封顶：单条 = 小组件高 + 间隙，多条 = 55%
+                    float cap = notifCardCount >= 2 ? (widgetH + gap) * 0.55f : (widgetH + gap);
+                    wanted = -Math.min(overlap, cap);
+                }
+            }
+        }
+        // 死区：差异小于 8dp 就不动，避免在阈值附近反复微调
+        if (Math.abs(wanted - notifExtra) < 8f * density() && wanted * notifExtra >= 0f) {
+            return;
+        }
+        applyNotifExtra(wanted);
+    }
+
+    /** 通知位移带 160ms 过渡，避免硬跳。 */
+    private void applyNotifExtra(float extra) {
+        if (Math.abs(extra - notifExtra) < 0.5f) {
+            return;
+        }
+        if (notifExtraAnim != null) {
+            notifExtraAnim.cancel();
+        }
+        android.animation.ValueAnimator a =
+                android.animation.ValueAnimator.ofFloat(notifExtra, extra);
+        a.setDuration(160L);
+        a.addUpdateListener(animation -> {
+            notifExtra = (Float) animation.getAnimatedValue();
+            applyNotifTranslation();
+        });
+        a.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                if (notifExtraAnim == a) {
+                    notifExtraAnim = null;
+                }
+            }
+        });
+        notifExtraAnim = a;
+        a.start();
+    }
+
+    /** 把 pageTy + notifExtra 合成到通知堆叠容器上。 */
+    /**
+     * 通知容器的 translationY 是**系统自己的动画参数**（下拉展开、通知插入
+     * 都在写它）。我们覆盖它会直接搞崩新通知的布局与可见性：
+     * 实测就是“来了通知不显示，上滑再下滑才出来”。
+     * 所以这里只保留“页面平移”那一路（与模块原有行为一致），
+     * 不再叠加 notifExtra。
+     */
+    /**
+     * 通知容器与面板的 translationY 是 **SystemUI 自己的动画参数**（下拉展开、
+     * 通知插入都在写）。无论我们写什么值，只要频繁重写，
+     * 就会打断它的展开动画 —— 表现就是“通知中心时好时坏地空白”。
+     *
+     * <p>所以改成受控写入：只有我们确实需要偏移（页面上滑 / 避让）时才写，
+     * 一旦回到 0 就归还一次，之后完全交给系统，不再每次 sync 都去覆盖它。
+     */
+    private void applyNotifTranslation() {
+        if (sKeyguardState == 0) {
+            return;   // 不在锁屏：不碰系统这两个容器
+        }
+        float notifTarget = pageTy + notifExtra;
+        if (Math.abs(notifTarget) > 0.5f) {
+            setTranslation(sharedNotif, notifTarget);
+            sharedNotifOwned = true;
+        } else if (sharedNotifOwned) {
+            setTranslation(sharedNotif, 0f);
+            sharedNotifOwned = false;
+        }
+
+        if (Math.abs(pageTy) > 0.5f) {
+            setTranslation(notificationPanel, pageTy);
+            panelOwned = true;
+        } else if (panelOwned) {
+            setTranslation(notificationPanel, 0f);
+            panelOwned = false;
+        }
+    }
+
+    private static boolean isDescendant(View child, View ancestor) {
+        android.view.ViewParent p = child.getParent();
+        while (p != null) {
+            if (p == ancestor) {
+                return true;
+            }
+            p = p.getParent();
+        }
+        return false;
+    }
+
+    /** 小组件图层当前在窗口里的索引（供日志看 z 序）。 */
+    private int widgetZIndex() {
+        return overlay == null || window == null ? -1 : window.indexOfChild(overlay);
+    }
+
+    /**
+     * 把小组件图层保持在锁屏内容下面：
+     * 通知、时钟都在 keyguard_root_view 里，它们自然盖在小组件上面。
+     */
+    private void ensureWidgetLayerOrder() {
+        if (widgetLayer == null || window == null) {
+            return;
+        }
+        View kg = find("keyguard_root_view");
+        if (kg == null) {
+            kg = keyguardRoot;
+        }
+        if (kg == null) {
+            return;
+        }
+        int kgIdx = window.indexOfChild(kg);
+        int myIdx = window.indexOfChild(widgetLayer);
+        if (kgIdx < 0 || myIdx < 0 || myIdx < kgIdx) {
+            return;   // 已经在下面了
+        }
+        try {
+            window.removeView(widgetLayer);
+            window.addView(widgetLayer, kgIdx,
+                    new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT));
+        } catch (Throwable ignored) {
+            // 重排失败就维持原样
+        }
+    }
+
+    /** 通知盖住组件时淡出（相当于置于底层）。 */
+    private void setWidgetCovered(boolean covered) {
+        if (lockWidgets == null) {
+            return;
+        }
+        float target = covered ? 0f : 1f;
+        if (Math.abs(lockWidgets.getAlpha() - target) < 0.01f) {
+            return;
+        }
+        lockWidgets.animate().cancel();
+        lockWidgets.animate().alpha(target).setDuration(120L).start();
+    }
+
+    private void setWidgetShown(boolean shown) {
+        if (lockWidgets == null) {
+            return;
+        }
+        float a = shown ? 1f : 0f;
+        if (lockWidgets.getAlpha() != a) {
+            lockWidgets.setAlpha(a);
+        }
+    }
+
+    /** 时钟可见内容的顶边（窗口坐标）：与 clockContentBottom 同一套判定。 */
+    private int clockContentTop() {
+        int limit = (int) (window.getHeight() * 0.70f);
+        int best = Integer.MAX_VALUE;
+        best = Math.min(best, visualTop(clockRoot, limit, 0));
+        best = Math.min(best, visualTop(clockSecond, limit, 0));
+        return best == Integer.MAX_VALUE ? 0 : best;
+    }
+
+    private int visualTop(View v, int heightLimit, int depth) {
+        if (v == null || depth > 12 || v.getVisibility() != View.VISIBLE) {
+            return Integer.MAX_VALUE;
+        }
+        int best = Integer.MAX_VALUE;
+        if (v.getWidth() > 0 && v.getHeight() > 0 && v.getHeight() <= heightLimit) {
+            int[] loc = new int[2];
+            v.getLocationInWindow(loc);
+            best = loc[1];
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                best = Math.min(best, visualTop(g.getChildAt(i), heightLimit, depth + 1));
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 缩放时钟内容（blur_blend_container）：小组件占位时时钟自动变小让位。
+     *
+     * <p>刻意不缩放整个 miui_keyguard_clock_container：那是整屏容器，
+     * 缩它会把背景与通知一起带歪。只缩真正画时钟的那层。
+     */
+    private void applyClockShrink(float factor) {
+        if (Math.abs(factor - clockShrinkNow) < 0.01f) {
+            return;
+        }
+        clockShrinkNow = factor;
+        if (clockScaleA == null) {
+            clockScaleA = findByIdIn(clockRoot, "blur_blend_container");
+        }
+        if (clockScaleB == null) {
+            clockScaleB = findByIdIn(clockSecond, "blur_blend_container");
+        }
+        scaleClockView(clockScaleA, factor);
+        scaleClockView(clockScaleB, factor);
+    }
+
+    private void scaleClockView(View v, float factor) {
+        if (v == null) {
+            return;
+        }
+        try {
+            // 只压缩纵向：时钟变短，字号宽度不变
+            v.setPivotX(v.getWidth() / 2f);
+            v.setPivotY(0f);
+            // 缩放期间挂硬件图层：变形交给 GPU，不重新光栅化
+            if (factor < 0.999f && v.getLayerType() != View.LAYER_TYPE_HARDWARE) {
+                v.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+            }
+            v.setScaleY(factor);
+            if (factor >= 0.999f && v.getLayerType() != View.LAYER_TYPE_NONE) {
+                v.setLayerType(View.LAYER_TYPE_NONE, null);
+            }
+        } catch (Throwable ignored) {
+            // 视图被回收之类：忽略
+        }
+    }
+
+    /** 按 id 名在子树里找第一个命中（同一 id 在主/副时钟容器里各有一份）。 */
+    private View findByIdIn(View root, String name) {
+        if (root == null) {
+            return null;
+        }
+        try {
+            int id = window.getResources().getIdentifier(name, "id", PKG);
+            if (id != 0) {
+                return root.findViewById(id);
+            }
+        } catch (Throwable ignored) {
+            // 没有这个 id 就算了
+        }
+        return null;
+    }
+
+    /**
+     * 通知列表里第一条可见通知的顶边（窗口坐标）；没有通知返回 MAX_VALUE。
+     *
+     * <p>不能只认 id：HyperOS 的通知堆叠容器叫
+     * {@code NotificationStackScrollLayout}，id 名各机型不一样（之前
+     * {@code findFirst} 两个 id 都没命中 → notifTop 恒为 MAX，避让形同虚设）。
+     * 这里改成按类名遍历找堆叠容器，再取它子视图里最高的那条。
+     */
+    private int notificationTop() {
+        View stack = stackView();
+        if (stack == null) {
+            return Integer.MAX_VALUE;
+        }
+        // 排除状态栏/顶部悬浮通知（banner）区：只认真正的列表卡片
+        int min = (int) (window.getHeight() * 0.14f);
+        int best = Integer.MAX_VALUE;
+        int count = 0;
+        if (stack instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) stack;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                View c = g.getChildAt(i);
+                if (c == null || c.getVisibility() != View.VISIBLE || c.getHeight() <= 0) {
+                    continue;
+                }
+                int[] loc = new int[2];
+                c.getLocationInWindow(loc);
+                // 返回的是“未平移”的基准坐标：先把我们自己的 notifExtra 扣掉，
+                // 否则下一轮会把“被我们推上去的位置”当成原始位置
+                int top = loc[1] - Math.round(notifExtra);
+                if (top < min) {
+                    continue;   // 十分钟历/状态栏那些不算通知
+                }
+                count++;
+                best = Math.min(best, top);
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 通知面板是否已整体展开：**第一张卡片**都跑到时钟上面去了。
+     *
+     * <p>不能用堆叠容器自身的顶边：它横跨整个屏幕（top≈0），
+     * 用它判定会永远得出“已展开”→ 小组件永远不显示。
+     */
+    private boolean shadeExpanded(int clockTop) {
+        int top = notificationTop();
+        if (top == Integer.MAX_VALUE) {
+            return false;
+        }
+        return top < clockTop + (int) (8f * density());
+    }
+
+    /** 取（带缓存的）通知堆叠容器。 */
+    private View stackView() {
+        long now = SystemClock.uptimeMillis();
+        if (notifStackCache == null || !notifStackCache.isAttachedToWindow()
+                || now - notifStackAt > 2000L) {
+            notifStackAt = now;
+            View found = findStackByClass(window, 0);
+            notifStackCache = found != null ? found : sharedNotif;
+        }
+        return notifStackCache;
+    }
+
+    /** 按类名找通知堆叠容器（不依赖 id）。 */
+    private View findStackByClass(View v, int depth) {
+        if (v == null || depth > 14) {
+            return null;
+        }
+        String name = v.getClass().getSimpleName();
+        if (name.contains("NotificationStackScrollLayout")) {
+            return v;
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                View r = findStackByClass(g.getChildAt(i), depth + 1);
+                if (r != null) {
+                    return r;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 时钟「实际画出来那块」的底边（窗口坐标）。
+     *
+     * <p>不能用时钟容器自身：HyperOS 的 {@code miui_keyguard_clock_container} 是整屏大容器，
+     * 取它的 bottom 会把小组件甩到屏幕最下面（上一版就是这么翻车的）；也不能只看 TextView ——
+     * 这里的数字时钟是自绘视图，一个 TextView 都没有，结果只量到日期那一行（y≈311px），
+     * 小组件就压在数字上了。
+     *
+     * <p>所以这里取「所有可见、且高度不超过 70% 屏高的子视图」的底边最大值：整屏容器和
+     * 满屏背景会被高度门槛排除，数字/日期这两种都会被算进来。
+     */
+    private int clockContentBottom() {
+        int limit = (int) (window.getHeight() * 0.70f);
+        int best = Integer.MIN_VALUE;
+        best = Math.max(best, visualBottom(clockRoot, limit, 0));
+        best = Math.max(best, visualBottom(clockSecond, limit, 0));
+        if (best == Integer.MIN_VALUE) {
+            best = Math.max(best,
+                    visualBottom(find("miui_keyguard_clock_container"), limit, 0));
+        }
+        if (best == Integer.MIN_VALUE) {
+            return (int) (window.getHeight() * 0.30f);
+        }
+        return best;
+    }
+
+    /** 子树里所有「不是整屏」的可见视图的底边最大值。 */
+    private int visualBottom(View v, int heightLimit, int depth) {
+        if (v == null || depth > 12 || v.getVisibility() != View.VISIBLE) {
+            return Integer.MIN_VALUE;
+        }
+        int best = Integer.MIN_VALUE;
+        if (v.getWidth() > 0 && v.getHeight() > 0 && v.getHeight() <= heightLimit) {
+            int[] loc = new int[2];
+            v.getLocationInWindow(loc);
+            best = loc[1] + Math.round(v.getHeight() * v.getScaleY());
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                best = Math.max(best, visualBottom(g.getChildAt(i), heightLimit, depth + 1));
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 监听电池与插拔电：电量瞳扇变化、插上/拔下电源时立即重拉数据。
+     *
+     * <p>之前只靠每 30s 定时拉，电量从 9% 跳到 8%、插上线也要等半分钟才变图标。
+     */
+    private void installWidgetReceiver(Context ctx) {
+        if (widgetReceiver != null) {
+            return;
+        }
+        widgetReceiver = new android.content.BroadcastReceiver() {
+            @Override
+            public void onReceive(Context c, android.content.Intent i) {
+                refreshLockWidgetData(true);
+            }
+        };
+        try {
+            android.content.IntentFilter f = new android.content.IntentFilter();
+            f.addAction(android.content.Intent.ACTION_BATTERY_CHANGED);
+            f.addAction(android.content.Intent.ACTION_POWER_CONNECTED);
+            f.addAction(android.content.Intent.ACTION_POWER_DISCONNECTED);
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                ctx.registerReceiver(widgetReceiver, f, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                ctx.registerReceiver(widgetReceiver, f);
+            }
+        } catch (Throwable t) {
+            widgetReceiver = null;   // 注册失败就退回 30s 定时拉
+        }
+    }
+
+    /** 后台刷新数据；{@code force} = 不管节流（刚显示时用）。 */
+    private void refreshLockWidgetData(boolean force) {
+        long now = SystemClock.uptimeMillis();
+        if (widgetDataLoading || (!force && now - lastWidgetDataAt < WIDGET_DATA_MS)) {
+            return;
+        }
+        lastWidgetDataAt = now;
+        widgetDataLoading = true;
+        final Context ctx = window.getContext();
+        LockConfig.io(() -> {
+            try {
+                applyWidgetData(ctx);
+            } catch (Throwable ignored) {
+                // 数据源不可用时只是这一件不显示，别的功能不受影响
+            } finally {
+                widgetDataLoading = false;
+            }
+        });
+    }
+
+    /**
+     * 拉三份数据，按当前样式喂给视图。
+     *
+     * <p>三个来源都是系统里已有的接口，不额外申请权限：
+     * 电池 = 粘性广播；天气 = {@code content://weather/weather}；步数 = 健康的
+     * {@code content://com.mi.health.provider.main/activity/steps/brief}（与系统锁屏步数同源）。
+     */
+    private void applyWidgetData(Context ctx) {
+        // ---- 电池
+        int pct = -1;
+        boolean charging = false;
+        try {
+            android.content.Intent batt = ctx.registerReceiver(null,
+                    new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED));
+            if (batt != null) {
+                int level = batt.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1);
+                int scale = batt.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1);
+                int status = batt.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1);
+                int plugged = batt.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0);
+                if (level >= 0 && scale > 0) {
+                    pct = Math.round(level * 100f / scale);
+                    // ‘插着电源’就算充电：满电/充电保护时系统会报
+                    // NOT_CHARGING（status=4），只看 status 的话插着线也不切图标
+                    charging = status == android.os.BatteryManager.BATTERY_STATUS_CHARGING
+                            || status == android.os.BatteryManager.BATTERY_STATUS_FULL
+                            || plugged != 0;
+                }
+            }
+        } catch (Throwable ignored) {
+            // 拿不到就这一件不显示
+        }
+
+        // ---- 天气（第一行 = 今天）
+        String temp = "";
+        String range = "";
+        int weatherType = 1;
+        float weatherRatio = 1f;
+        try (android.database.Cursor c = ctx.getContentResolver().query(
+                android.net.Uri.parse("content://weather/weather"), null, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                temp = cursorString(c, "temperature").replace("℃", "°");
+                range = cursorString(c, "temperature_range").replace("℃", "°");
+                weatherType = cursorInt(c, "weather_type");
+                int cur = parseIntSafe(temp.replace("°", "").trim());
+                int high = cursorInt(c, "tmphighs");
+                int low = cursorInt(c, "tmplows");
+                if (high > low && cur != Integer.MIN_VALUE) {
+                    weatherRatio = (cur - low) / (float) (high - low);
+                }
+            }
+        } catch (Throwable ignored) {
+            // 没装天气 / 没授权：这一件不显示
+        }
+
+        // ---- 步数
+        String steps = "";
+        String energy = "";
+        float stepsRatio = 0f;
+        try (android.database.Cursor c = ctx.getContentResolver().query(
+                android.net.Uri.parse("content://com.mi.health.provider.main/activity/steps/brief"),
+                null, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int n = cursorInt(c, "steps");
+                int goal = cursorInt(c, "goal");
+                int kcal = cursorInt(c, "energy");
+                // 跨天归零也要显示：0 步也是有效数据，
+                // 之前写成 n>0 才显示，午夜一过整个环就消失
+                steps = n >= 10000
+                        ? String.format(java.util.Locale.US, "%.1f万", n / 10000f)
+                        : String.valueOf(n);
+                energy = kcal > 0 ? kcal + " 千卡" : "";
+                stepsRatio = goal > 0 ? Math.min(1f, n / (float) goal) : 0.6f;
+            }
+        } catch (Throwable ignored) {
+            // 健康未授权：这一件不显示
+        }
+
+        final int fPct = pct;
+        final boolean fCharging = charging;
+        final String fTemp = temp;
+        final String fRange = range;
+        final int fType = weatherType;
+        final float fWeatherRatio = Math.max(0f, Math.min(1f, weatherRatio));
+        final String fSteps = steps;
+        final String fEnergy = energy;
+        final float fStepsRatio = stepsRatio;
+
+        window.post(() -> {
+            LockWidgetView v = lockWidgets;
+            if (v == null) {
+                return;
+            }
+            // 三件拼一排：一直同时喂三份数据
+            v.setBattery(fPct, fCharging);
+            v.setWeather(fTemp, fRange, fType, fWeatherRatio,
+                    java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY));
+            v.setSteps(fSteps, fEnergy, fStepsRatio);
+        });
+    }
+
+    private static int parseIntSafe(String s) {
+        try {
+            return Integer.parseInt(s);
+        } catch (Throwable t) {
+            return Integer.MIN_VALUE;
+        }
+    }
+
+    private static String cursorString(android.database.Cursor c, String column) {
+        try {
+            int i = c.getColumnIndex(column);
+            if (i < 0) {
+                return "";
+            }
+            String s = c.getString(i);
+            return s == null ? "" : s;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private static int cursorInt(android.database.Cursor c, String column) {
+        try {
+            int i = c.getColumnIndex(column);
+            return i < 0 ? 0 : c.getInt(i);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    // ------------------------------------------------------- 状态栏几何（给参数页预览用）
+
+    /**
+     * 「信号塔」图标的类名特征（小写比对）。
+     *
+     * <p>本 ROM 是 {@code MiuiStatusBarMobileView}，但别的 HyperOS / 一加 / 三星机型各有各的
+     * 类名，所以只认语义片段，不认全名；聚合容器（{@code *SignalCluster*}）要排除，那是一个
+     * 装着信号 + Wi-Fi + 电量的壳，拿它的矩形会把预览标成一大块。
+     */
+    private static final String[] TOWER_HINTS = {"mobile", "signalview", "networkview", "mobilesignal"};
+
+    /**
+     * 预览数据多久回传一次（ms）。
+     *
+     * <p>状态栏几何是「基本不变的东西」，但 {@code sync()} 在锁屏上会被频繁调用；
+     * 每次都遍历一遍状态栏子树纯属浪费主线程，节流到这个间隔足够。
+     */
+    private static final long LAYOUT_PUBLISH_MS = 2000L;
+
+    private long lastLayoutPublish;
+
+    /**
+     * 把锁屏状态栏与信号塔的<b>实测几何</b>回传 App（{@link LockConfig#KEY_DEBUG_LAYOUT}）。
+     *
+     * <p>坐标全用<b>窗口坐标 px</b>，和 {@code positionTopRightBar()} 里算 {@code topMargin}
+     * 的口径完全一致 —— 预览只有和真机用同一套坐标，才不会出现「预览在塔上方、真机在塔下方」。
+     * 找不到信号塔时 {@code tL..tB} 全 0，参数页据此退化成只画状态栏高度。
+     */
+    private void publishLayoutMetrics(View sb) {
+        long now = SystemClock.uptimeMillis();
+        if (now - lastLayoutPublish < LAYOUT_PUBLISH_MS) {
+            return;
+        }
+        lastLayoutPublish = now;
+        try {
+            int dpi = Math.round(window.getResources().getDisplayMetrics().density * 160f);
+            int sbT = 0;
+            int sbH = 0;
+            int tL = 0;
+            int tT = 0;
+            int tR = 0;
+            int tB = 0;
+            String cls = "";
+            if (sb != null && sb.isAttachedToWindow()) {
+                int[] loc = new int[2];
+                sb.getLocationInWindow(loc);
+                sbT = loc[1];
+                sbH = sb.getHeight();
+                View tower = findSignalTower(sb);
+                if (tower != null) {
+                    int[] tl = new int[2];
+                    tower.getLocationInWindow(tl);
+                    tL = tl[0];
+                    tT = tl[1];
+                    tR = tl[0] + tower.getWidth();
+                    tB = tl[1] + tower.getHeight();
+                    cls = tower.getClass().getSimpleName();
+                }
+            }
+            String s = "w=" + window.getWidth() + ";h=" + window.getHeight() + ";dpi=" + dpi
+                    + ";sbT=" + sbT + ";sbH=" + sbH
+                    + ";tL=" + tL + ";tT=" + tT + ";tR=" + tR + ";tB=" + tB + ";cls=" + cls;
+            config.putDebug(LockConfig.KEY_DEBUG_LAYOUT, s);
+        } catch (Throwable ignored) {
+            // 纯预览数据：失败不影响小白条本体，也不该让 sync 抛出去
+        }
+    }
+
+    /**
+     * 在锁屏状态栏子树里找信号塔。
+     *
+     * <p>取<b>最靠左</b>的那个候选：右上角一排是「信号塔 / Wi-Fi / 电量」，塔永远在最左边，
+     * 靠这条相对关系就能在类名完全不知道的 ROM 上稳定选中它，而不用去枚举机型。
+     */
+    private View findSignalTower(View root) {
+        if (root == null) {
+            return null;
+        }
+        java.util.ArrayList<View> hits = new java.util.ArrayList<>();
+        collectIconViews(root, hits, 0);
+        View best = null;
+        int bestLeft = Integer.MAX_VALUE;
+        for (int i = 0; i < hits.size(); i++) {
+            View v = hits.get(i);
+            int[] loc = new int[2];
+            v.getLocationInWindow(loc);
+            if (loc[0] < bestLeft) {
+                bestLeft = loc[0];
+                best = v;
+            }
+        }
+        return best;
+    }
+
+    private static void collectIconViews(View v, java.util.List<View> out, int depth) {
+        if (v == null || depth > 12 || v.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        String name = v.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+        if (!name.contains("cluster")) {
+            for (int i = 0; i < TOWER_HINTS.length; i++) {
+                if (name.contains(TOWER_HINTS[i])) {
+                    out.add(v);
+                    break;
+                }
+            }
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                collectIconViews(g.getChildAt(i), out, depth + 1);
+            }
+        }
+    }
+
     private boolean inHandleBox(float x, float y) {
         if (handle == null || overlay == null || overlay.getVisibility() != View.VISIBLE) {
             return false;
@@ -897,13 +1800,53 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             return;
         }
         sControlCenterOpen = open;
-        ModuleLog.d(open ? "控制中心展开·上滑手势让路" : "控制中心收起·拦截恢复");
-        ModuleLog.flush();
+        final LockBarController c = sInstance;
+        if (open) {
+            if (c != null && c.topRightBar != null) {
+                c.topRightBar.setVisibility(View.GONE);   // 控制中心开着时藏起右上角小白条
+            }
+            ModuleLog.d("控制中心展开·上滑手势让路");
+            ModuleLog.flush();
+        } else {
+            if (c != null) {
+                c.topRightHandleOpenedCc = false;
+                if (c.topRightBar != null && c.config.topRightHandle && sKeyguardState != 0) {
+                    c.topRightBar.setVisibility(View.VISIBLE);
+                }
+            }
+            ModuleLog.d("控制中心收起·拦截恢复");
+            ModuleLog.flush();
+        }
     }
 
     /** 控制中心开着时给 {@link LockHandleView} 用：小白条这次按下直接不消费。 */
     static boolean controlCenterOpen() {
         return sControlCenterOpen;
+    }
+
+    /**
+     * 只有“手指确实在拖右缘”时才压制控制中心展开。
+     *
+     * <p>之前用 {@link #shouldBlockCcPull()} 做判定，它只看“开关开了 + 在锁屏”，
+     * 于是整个下拉（包括左半边的通知中心）都被压成 0 高度 ——
+     * 就是“有通知但通知中心空白”的真因。
+     */
+    static boolean shouldBlockCcExpandNow() {
+        LockBarController c = sInstance;
+        if (c == null || !c.blockCcEdgePull || !c.config.topRightHandle || sKeyguardState == 0) {
+            return false;
+        }
+        // 时效：只认最近 2 秒内真正在拖右缘的那次手势。
+        // 否则标志一旦残留（手势被别人吃掉、没收到 UP），
+        // 解锁后的通知中心也会被压成 0 高度——就是“有通知但空白”。
+        return SystemClock.uptimeMillis() - c.blockCcEdgeAt < 2000L;
+    }
+
+    /** 锁屏右上方小白条开启时：系统右缘下拉的控制中心该不该被压住。 */
+    static boolean shouldBlockCcPull() {
+        final LockBarController c = sInstance;
+        return c != null && c.config.topRightHandle && sKeyguardState != 0
+                && !c.topRightHandleOpenedCc;
     }
 
     private static LockBarController obtain(Object w, LockConfig config, XposedInterface module) {
@@ -992,10 +1935,60 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         overlay.addView(hint, hintLp);
         updateHint();
 
+        // 锁屏右上方小白条：下拉打开控制中心（替代系统右缘下拉）
+        topRightBar = new View(ctx);
+        android.graphics.drawable.GradientDrawable barBg =
+                new android.graphics.drawable.GradientDrawable();
+        barBg.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        barBg.setColor(0xCCFFFFFF);
+        barBg.setCornerRadius(3f * density);
+        topRightBar.setBackground(barBg);
+        topRightBar.setAlpha(config.topRightBarOpacity);
+        topRightBar.setVisibility(View.GONE);
+        int barWidth = Math.max(1, (int) (config.topRightBarLength * density));
+        int barHeight = Math.max(1, (int) (config.topRightBarThickness * density));
+        FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(
+                barWidth, barHeight, Gravity.TOP | Gravity.END);
+        barLp.topMargin = (int) (config.topRightBarY * density);
+        barLp.rightMargin = (int) (config.topRightBarX * density);
+        overlay.addView(topRightBar, barLp);
+
+        // 锁屏小组件：一排小圆（天气 / 步数 / 电池），位置跟着时钟底部走
+        lockWidgets = new LockWidgetView(ctx);
+        lockWidgets.setSizeDp(config.lockWidgetSize);
+        lockWidgets.setVisibility(View.GONE);
+        lockWidgets.addOnLayoutChangeListener((v, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) -> updateWidgetGlassOrigin());
+        installWidgetReceiver(ctx);
+
+        // 组件放回 overlay 里（不再往 NotificationShadeWindowView 插额外图层）：
+        // 之前为了 z 序往窗口里插了一层 MatchParent 子视图，它会改变系统对
+        // 窗口子视图序列的假设（通知面板的布局/可见性会受影响）。
+        // 组件单独一层，插在 keyguard_root_view **之下**：
+        // 这样锁屏上展开的通知会自然盖在组件上面（真正的底层），
+        // 而不是靠淡出去装。之前怀疑它弄坏通知中心，
+        // 后来定位到真因是 pageTy 残留，所以这层可以放回来。
+        FrameLayout.LayoutParams widgetsLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        widgetLayer = new FrameLayout(ctx);
+        widgetLayer.setClipChildren(false);
+        widgetLayer.setClipToPadding(false);
+        widgetLayer.addView(lockWidgets, widgetsLp);
+
         // NotificationShadeWindowView 的父类链是 WindowRootView -> FrameLayout
         FrameLayout.LayoutParams windowLp =
                 new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT);
+        View kg = find("keyguard_root_view");
+        int insertAt = window.getChildCount();
+        if (kg != null) {
+            int idx = window.indexOfChild(kg);
+            if (idx >= 0) {
+                insertAt = idx;
+            }
+        }
+        window.addView(widgetLayer, insertAt, windowLp);
         window.addView(overlay, windowLp);
 
         if (config.blurEnabled) {
@@ -1418,10 +2411,64 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         boolean interactive = isInteractive();
         boolean onKeyguard = ready && stateOk && !bouncerShowing && interactive
                 && keyguardRoot.isShown() && config.enabled;
+        if (!onKeyguard) {
+            // 解锁 / 隐藏锁屏：右缘拦截标志必须归零，否则会带到桌面的通知中心
+            blockCcEdgePull = false;
+            ccEdgeCandidate = false;
+
+            // 关键：把锁屏那套位移全部撤回。
+            // 不撤的话，pageTy 会残留成一个负值，而我们的“受控写入”会一直把
+            // 通知容器 / 面板按在那个偏移上 —— 解锁后的通知中心就会“有通知但看不到”。
+            pageTy = 0f;
+            widgetExtra = 0f;
+            notifExtra = 0f;
+            if (sharedNotifOwned) {
+                setTranslation(sharedNotif, 0f);
+                sharedNotifOwned = false;
+            }
+            if (panelOwned) {
+                setTranslation(notificationPanel, 0f);
+                panelOwned = false;
+            }
+        }
 
         int visibility = onKeyguard ? View.VISIBLE : View.GONE;
         if (overlay.getVisibility() != visibility) {
             overlay.setVisibility(visibility);
+        }
+        int barVis = onKeyguard && config.topRightHandle && !sControlCenterOpen
+                ? View.VISIBLE : View.GONE;
+        if (topRightBar != null && topRightBar.getVisibility() != barVis) {
+            topRightBar.setVisibility(barVis);
+        }
+        if (onKeyguard && config.topRightHandle && !sControlCenterOpen) {
+            positionTopRightBar();
+        }
+        int widgetVis = onKeyguard && config.lockWidget && !sControlCenterOpen
+                ? View.VISIBLE : View.GONE;
+        if (lockWidgets != null) {
+            boolean becameVisible = lockWidgets.getVisibility() != widgetVis
+                    && widgetVis == View.VISIBLE;
+            if (lockWidgets.getVisibility() != widgetVis) {
+                lockWidgets.setVisibility(widgetVis);
+            }
+            if (widgetLayer != null && widgetLayer.getVisibility() != widgetVis) {
+                widgetLayer.setVisibility(widgetVis);
+            }
+            if (widgetVis == View.VISIBLE) {
+                positionLockWidgets(becameVisible);
+                lockWidgets.ensureWallpaper();
+                if (strip != null) {
+                    // 玻璃条读到的壁纸与小组件共用：动态壁纸下自己读不到文件
+                    lockWidgets.setWallpaper(strip.wallpaperBitmap());
+                }
+                // 刚显示 / 从隐到显：强制重拉一次，避免拿着旧数据
+                refreshLockWidgetData(becameVisible);
+            }
+        }
+        if (onKeyguard) {
+            // 与「小白条开不开」无关：参数页预览任何时候打开都该有真机几何可用
+            publishLayoutMetrics(find("keyguard_status_bar"));
         }
 
         if (!onKeyguard) {
@@ -1755,6 +2802,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             }
             setTranslation(clockSecond, clockSecondBaseY - lift);
         }
+        // 锁屏小组件：同时跟页面位移与时钟抬升
+        updateWidgetFollow();
     }
 
     /**
@@ -1998,8 +3047,10 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         float edge = h - shift;
         float ty = config.parallax ? -shift : 0f;
         setTranslation(keyguardRoot, ty);
-        setTranslation(sharedNotif, ty);
+        applyNotifTranslation();
         setTranslation(notificationPanel, ty);
+        pageTy = ty;
+        updateWidgetFollow();
         // 景深/壁纸层反向补偿：这些层画的是壁纸本身（含景深主体），必须留在屏幕原位 ——
         // 否则前面的主体跟着上滑、后面的系统壁纸不动，就会出现「主体分身」。
         // 内容根已平移 ty，这里给候选层写 base-ty 抵消（ty=0 时还原并清缓存）。
@@ -2123,6 +3174,56 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             strip.clear();
         }
         detachDepthBandPass();
+    }
+
+    /** 小组件跟随：页面位移 + 时钟抬升（与时钟同一套变换）。 */
+    private void updateWidgetFollow() {
+        if (lockWidgets == null) {
+            return;
+        }
+        // 跟随的只有“页面位移”（小横条上滑解锁那一路）；
+        // 时钟自己的 lift 不算 —— “上滑时钟”时组件保持静止。
+        setTranslation(lockWidgets, pageTy + widgetExtra);
+        updateWidgetGlassOrigin();
+    }
+
+    /** Overlay 是独立于锁屏内容的 Window 子 View；给玻璃采样器传入合成后的真实屏幕坐标。 */
+    private void updateWidgetGlassOrigin() {
+        if (lockWidgets == null || overlay == null) {
+            return;
+        }
+        int[] root = new int[2];
+        View parent = widgetLayer != null ? widgetLayer : overlay;
+        parent.getLocationInWindow(root);
+        int x = root[0] + lockWidgets.getLeft() + Math.round(lockWidgets.getTranslationX());
+        int y = root[1] + lockWidgets.getTop() + Math.round(lockWidgets.getTranslationY());
+        lockWidgets.setSamplingOrigin(x, y);
+    }
+
+    /** 避让产生的位移用 160ms 过渡，直接改 topMargin 会看着像跳了一下。 */
+    private void setWidgetExtra(float extra) {
+        if (Math.abs(extra - widgetExtra) < 0.5f) {
+            return;
+        }
+        if (widgetExtraAnim != null) {
+            widgetExtraAnim.cancel();
+        }
+        android.animation.ValueAnimator a = android.animation.ValueAnimator.ofFloat(widgetExtra, extra);
+        a.setDuration(160L);
+        a.addUpdateListener(animation -> {
+            widgetExtra = (Float) animation.getAnimatedValue();
+            updateWidgetFollow();
+        });
+        a.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                if (widgetExtraAnim == a) {
+                    widgetExtraAnim = null;
+                }
+            }
+        });
+        widgetExtraAnim = a;
+        a.start();
     }
 
     private static void setTranslation(View v, float y) {

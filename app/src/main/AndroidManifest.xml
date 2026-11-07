@@ -11,15 +11,35 @@
         android:theme="@style/Theme.LockBar"
         tools:ignore="MissingApplicationIcon">
 
+        <!--
+            模块设置入口：挂的是 LSPosed 认的 MODULE_SETTINGS category
+            （de.robv.android.xposed.category.MODULE_SETTINGS）。
+            LSPosed 的「打开」优先用它找模块页面，所以即使桌面图标（下面的 alias）
+            被禁用，仍能从 LSPosed 里进来。
+        -->
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
             </intent-filter>
         </activity>
+
+        <!-- 桌面图标单独一个 alias：设置页「隐藏桌面图标」只禁用它 -->
+        <activity-alias
+            android:name=".ui.LauncherAlias"
+            android:targetActivity=".ui.MainActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@drawable/ic_app_icon"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
         <!--
             诊断数据回传通道（SystemUI → App）。

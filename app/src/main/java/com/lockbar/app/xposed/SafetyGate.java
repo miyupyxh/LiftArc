@@ -59,8 +59,8 @@ final class SafetyGate {
     private static final String TAG = "LockBar";
     private static final String FILE_NAME = "lockbar_safety.properties";
 
-    /** 上次进程活过这么久就算一次正常会话，连击清零。 */
-    private static final long ALIVE_OK_MS = 3 * 60_000L;
+    /** 上次进程活过这么久就算一次正常会话，连击清零。只把「1 分钟内就死」当短命。 */
+    private static final long ALIVE_OK_MS = 60_000L;
     /** 连续这么多次“短命启动”就判定为崩溃循环。 */
     private static final int SAFE_BOOTS = 4;
     /** 主线程心跳间隔。 */

@@ -144,7 +144,7 @@ internal fun GlassScreen(onBack: () -> Unit) {
                 GroupCard(title = stringResource(R.string.group_glass_mat)) {
                     NumSliderPreference(
                         title = stringResource(R.string.pref_glass_thick),
-                        summary = stringResource(R.string.pref_glass_thick_summary),
+                        summary = optSummary(R.string.pref_glass_thick_summary),
                         startAction = { PrefIcon(Icons.Rounded.AutoAwesome) },
                         value = glassThick,
                         onValueChange = { glassThick = it },
@@ -156,7 +156,7 @@ internal fun GlassScreen(onBack: () -> Unit) {
                     )
                     NumSliderPreference(
                         title = stringResource(R.string.pref_glass_opacity),
-                        summary = stringResource(R.string.pref_glass_opacity_summary),
+                        summary = optSummary(R.string.pref_glass_opacity_summary),
                         startAction = { PrefIcon(Icons.Rounded.Opacity) },
                         value = glassOpacity,
                         onValueChange = { glassOpacity = it },
@@ -169,7 +169,7 @@ internal fun GlassScreen(onBack: () -> Unit) {
                     )
                     NumSliderPreference(
                         title = stringResource(R.string.pref_glass_diffuse),
-                        summary = stringResource(R.string.pref_glass_diffuse_summary),
+                        summary = optSummary(R.string.pref_glass_diffuse_summary),
                         startAction = { PrefIcon(Icons.Rounded.LightMode) },
                         value = glassDiffuse,
                         onValueChange = { glassDiffuse = it },
@@ -181,7 +181,7 @@ internal fun GlassScreen(onBack: () -> Unit) {
                     )
                     NumSliderPreference(
                         title = stringResource(R.string.pref_glass_blur),
-                        summary = stringResource(R.string.pref_glass_blur_summary),
+                        summary = optSummary(R.string.pref_glass_blur_summary),
                         startAction = { PrefIcon(Icons.Rounded.BlurOn) },
                         value = glassBlur,
                         onValueChange = { glassBlur = it },
@@ -197,7 +197,7 @@ internal fun GlassScreen(onBack: () -> Unit) {
                 GroupCard(title = stringResource(R.string.group_glass_refract)) {
                     NumSliderPreference(
                         title = stringResource(R.string.pref_glass_refract),
-                        summary = stringResource(R.string.pref_glass_refract_summary),
+                        summary = optSummary(R.string.pref_glass_refract_summary),
                         startAction = { PrefIcon(Icons.Rounded.Texture) },
                         value = glassRefract,
                         onValueChange = { glassRefract = it },
@@ -210,7 +210,7 @@ internal fun GlassScreen(onBack: () -> Unit) {
                     )
                     NumSliderPreference(
                         title = stringResource(R.string.pref_glass_edge_ref),
-                        summary = stringResource(R.string.pref_glass_edge_ref_summary),
+                        summary = optSummary(R.string.pref_glass_edge_ref_summary),
                         startAction = { PrefIcon(Icons.Rounded.Tune) },
                         value = glassEdgeRef,
                         onValueChange = { glassEdgeRef = it },
@@ -222,7 +222,7 @@ internal fun GlassScreen(onBack: () -> Unit) {
                     )
                     NumSliderPreference(
                         title = stringResource(R.string.pref_glass_refract_w),
-                        summary = stringResource(R.string.pref_glass_refract_w_summary),
+                        summary = optSummary(R.string.pref_glass_refract_w_summary),
                         startAction = { PrefIcon(Icons.Rounded.BlurCircular) },
                         value = glassRefractW,
                         onValueChange = { glassRefractW = it },
@@ -234,7 +234,7 @@ internal fun GlassScreen(onBack: () -> Unit) {
                     )
                     NumSliderPreference(
                         title = stringResource(R.string.pref_glass_fresnel),
-                        summary = stringResource(R.string.pref_glass_fresnel_summary),
+                        summary = optSummary(R.string.pref_glass_fresnel_summary),
                         startAction = { PrefIcon(Icons.Rounded.WaterDrop) },
                         value = glassFresnel,
                         onValueChange = { glassFresnel = it },
@@ -251,7 +251,7 @@ internal fun GlassScreen(onBack: () -> Unit) {
                 GroupCard(title = stringResource(R.string.group_glass_light)) {
                     NumSliderPreference(
                         title = stringResource(R.string.pref_glass_highlight),
-                        summary = stringResource(R.string.pref_glass_highlight_summary),
+                        summary = optSummary(R.string.pref_glass_highlight_summary),
                         startAction = { PrefIcon(Icons.Rounded.BrightnessLow) },
                         value = glassHighlight,
                         onValueChange = { glassHighlight = it },
@@ -263,7 +263,7 @@ internal fun GlassScreen(onBack: () -> Unit) {
                     )
                     NumSliderPreference(
                         title = stringResource(R.string.pref_glass_hl_width),
-                        summary = stringResource(R.string.pref_glass_hl_width_summary),
+                        summary = optSummary(R.string.pref_glass_hl_width_summary),
                         startAction = { PrefIcon(Icons.Rounded.Adjust) },
                         value = glassHlWidth,
                         onValueChange = { glassHlWidth = it },

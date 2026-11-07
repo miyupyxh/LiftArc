@@ -89,6 +89,30 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
      * 都是 Long，否则就是 v1.0.15 那种 {@code ClassCastException} 的翻版。
      */
     private static final String KEY_SAFETY_EXIT = "safety_exit";
+    /** 禁用安全模式：true = 启动时跳过崩溃循环判定，永远不因安全模式停用 hook。 */
+    private static final String KEY_SAFETY_DISABLED = "safety_disabled";
+    /** 锁屏右上方小白条：锁屏时右上角短横条，下拉打开控制中心。 */
+    private static final String KEY_TOP_RIGHT_HANDLE = "top_right_handle";
+    private static final String KEY_TOP_RIGHT_BAR_LENGTH = "top_right_bar_len";
+    private static final String KEY_TOP_RIGHT_BAR_THICK = "top_right_bar_thick";
+    private static final String KEY_TOP_RIGHT_BAR_X = "top_right_bar_x";
+    private static final String KEY_TOP_RIGHT_BAR_Y = "top_right_bar_y";
+    private static final String KEY_TOP_RIGHT_BAR_ELASTIC = "top_right_bar_elastic";
+    private static final String KEY_TOP_RIGHT_BAR_OPACITY = "top_right_bar_opacity";
+    /** 锁屏小组件：天气 / 步数 / 电池这一排小圆。 */
+    private static final String KEY_LOCK_WIDGET = "lock_widget";
+    /** 小组件相对时钟底部的下移量（dp）。 */
+    private static final String KEY_LOCK_WIDGET_Y = "lock_widget_y";
+    /** 小组件水平偏移（dp）。 */
+    private static final String KEY_LOCK_WIDGET_X = "lock_widget_x";
+    /** 小组件直径（dp），字号与线宽跟着等比缩放。 */
+    private static final String KEY_LOCK_WIDGET_SIZE = "lock_widget_size";
+    /** 小组件样式：0 = 环形天气，1 = 环形步数，2 = 条形电池。 */
+    private static final String KEY_LOCK_WIDGET_STYLE = "lock_widget_style";
+    /** 小组件占位时时钟自动缩小。 */
+    private static final String KEY_LOCK_WIDGET_SHRINK_CLOCK = "lock_widget_shrink_clock";
+    /** 小组件是否跟随锁屏上滑（默认不跟）。 */
+    private static final String KEY_LOCK_WIDGET_FOLLOW = "lock_widget_follow";
 
     /**
      * 一键清空模块日志（App 写时间戳 → hook 清 {@link ModuleLog} 环形缓冲）。
@@ -114,6 +138,14 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
 
     /** SystemUI 写回 App 展示的诊断信息（不是配置，改动时不能触发重载）。 */
     static final String KEY_DEBUG_STATUS = "debug_status";
+    /**
+     * 锁屏状态栏 / 信号塔的<b>实测几何</b>（窗口坐标，px）：参数页预览按它 1:1 还原真机位置。
+     *
+     * <p>格式 {@code w=..;h=..;dpi=..;sbT=..;sbH=..;tL=..;tT=..;tR=..;tB=..;cls=..}，
+     * 与 {@code Prefs.readLayout()} / 参数页解析约定逐字一致。同样以 {@code debug_} 开头，
+     * 不触发整组 reload。
+     */
+    static final String KEY_DEBUG_LAYOUT = "debug_layout";
     static final String KEY_DEBUG_VIEWS = "debug_views";
     /** 拦截系统上滑的计数；单独一条 key，免得把 unlock= 那条覆盖掉。 */
     static final String KEY_DEBUG_BLOCK = "debug_block";
@@ -245,6 +277,36 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     float hintOffsetX;
     /** 安全模式退出请求：App 写下的时间戳，{@code 0} = 没有请求。 */
     long safetyExit;
+    /** 是否禁用安全模式（用户主动关闭崩溃循环判定）。 */
+    boolean safetyDisabled;
+    /** 锁屏右上方小白条：下拉打开控制中心。 */
+    boolean topRightHandle;
+    /** 小白条长度（dp）。 */
+    float topRightBarLength = 48f;
+    /** 小白条粗细（dp）。 */
+    float topRightBarThickness = 6f;
+    /** 小白条距右边缘（dp）。 */
+    float topRightBarX = 18f;
+    /** 小白条距顶部（dp；有锁屏状态栏时=相对状态栏顶部的偏移）。 */
+    float topRightBarY = 0f;
+    /** 下拉弹性（0..1，位移倍率）。 */
+    float topRightBarElastic = 0.6f;
+    /** 小白条透明度（0..1）。 */
+    float topRightBarOpacity = 0.85f;
+    /** 锁屏小组件（天气 / 步数 / 电池）。 */
+    boolean lockWidget;
+    /** 小组件相对时钟底部的下移量（dp）。 */
+    float lockWidgetY = 8f;
+    /** 小组件水平偏移（dp，0 = 居中）。 */
+    float lockWidgetX;
+    /** 小组件直径（dp）。 */
+    float lockWidgetSize = 81f;
+    /** 小组件样式索引（0..2）。 */
+    int lockWidgetStyle;
+    /** 小组件占位时时钟自动缩小。 */
+    boolean lockWidgetShrinkClock = true;
+    /** 小组件是否跟随锁屏上滑。 */
+    boolean lockWidgetFollow;
 
     LockConfig(XposedInterface module) {
         this.module = module;
@@ -257,6 +319,16 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     /** 安全模式退出请求的时间戳；{@code 0} = 没有请求。见 {@link #KEY_SAFETY_EXIT}。 */
     long safetyExit() {
         return safetyExit;
+    }
+
+    /** 是否禁用安全模式。 */
+    boolean safetyDisabled() {
+        return safetyDisabled;
+    }
+
+    /** 锁屏右上方小白条是否开启。 */
+    boolean topRightHandle() {
+        return topRightHandle;
     }
 
     void load() {
@@ -327,6 +399,21 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
             hintGap = 10f;
             hintOffsetX = 0f;
             safetyExit = 0L;
+            safetyDisabled = false;
+            topRightHandle = false;
+            topRightBarLength = 48f;
+            topRightBarThickness = 6f;
+            topRightBarX = 18f;
+            topRightBarY = 0f;
+            topRightBarElastic = 0.6f;
+            topRightBarOpacity = 0.85f;
+            lockWidget = false;
+            lockWidgetY = 8f;
+            lockWidgetX = 0f;
+            lockWidgetSize = 81f;
+            lockWidgetStyle = 0;
+            lockWidgetShrinkClock = true;
+            lockWidgetFollow = true;
             return;
         }
         // 全部走下面那组容错 getter：远端配置是**原样存类型**的，
@@ -385,6 +472,21 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
             hintOffsetX = clamp(getFlt(p, KEY_HINT_OFFSET_X, 0f), -200f, 200f);
             // 控制类键，不参与界面：类型两侧都约定为 Long（见 KEY_SAFETY_EXIT 注释）
             safetyExit = getLng(p, KEY_SAFETY_EXIT, 0L);
+            safetyDisabled = getBool(p, KEY_SAFETY_DISABLED, false);
+            topRightHandle = getBool(p, KEY_TOP_RIGHT_HANDLE, false);
+            topRightBarLength = clamp(getFlt(p, KEY_TOP_RIGHT_BAR_LENGTH, 48f), 16f, 200f);
+            topRightBarThickness = clamp(getFlt(p, KEY_TOP_RIGHT_BAR_THICK, 6f), 2f, 24f);
+            topRightBarX = clamp(getFlt(p, KEY_TOP_RIGHT_BAR_X, 18f), 0f, 160f);
+            topRightBarY = clamp(getFlt(p, KEY_TOP_RIGHT_BAR_Y, 0f), 0f, 240f);
+            topRightBarElastic = clamp(getFlt(p, KEY_TOP_RIGHT_BAR_ELASTIC, 0.6f), 0f, 1f);
+            topRightBarOpacity = clamp(getFlt(p, KEY_TOP_RIGHT_BAR_OPACITY, 0.85f), 0f, 1f);
+            lockWidget = getBool(p, KEY_LOCK_WIDGET, false);
+            lockWidgetY = clamp(getFlt(p, KEY_LOCK_WIDGET_Y, 8f), -400f, 900f);
+            lockWidgetX = clamp(getFlt(p, KEY_LOCK_WIDGET_X, 0f), -400f, 400f);
+            lockWidgetSize = clamp(getFlt(p, KEY_LOCK_WIDGET_SIZE, 81f), 36f, 200f);
+            lockWidgetStyle = Math.max(0, Math.min(2, getIn(p, KEY_LOCK_WIDGET_STYLE, 0)));
+            lockWidgetShrinkClock = getBool(p, KEY_LOCK_WIDGET_SHRINK_CLOCK, true);
+            lockWidgetFollow = getBool(p, KEY_LOCK_WIDGET_FOLLOW, true);
         } catch (Throwable t) {
             // 兜底：下面那几个 getter 已保证单键不抛，这里防的是将来有人加新读法忘了走 helper。
             // 无论发生什么都不能让配置读取把 install() 顶掉 —— 那等于整个模块 0 效果。
