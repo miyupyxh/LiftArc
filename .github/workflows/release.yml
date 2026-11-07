@@ -1,0 +1,376 @@
+name: Release
+
+on:
+  # 只手动触发：Actions 页面点 Run workflow。
+  # 不挂 push / tag 触发，避免每次提交都发一个 Release。
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+# 两个发版任务同时跑会互相抢 versionCode 和 tag，排队执行
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      # setup-gradle 自带的缓存 key 里带 workflow 名，将来加别的构建工作流时不会共用同一份，
+      # 所以关掉它，缓存统一交给下一步 actions/cache，key 里只有 Gradle 版本。
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-disabled: true
+
+      - name: Cache Gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/caches/build-cache-1
+            ~/.gradle/wrapper/dists
+          # 版本号写在 build.gradle.kts 里不参与计算，否则每次发版改 versionName 就会整份缓存作废
+          key: gradle-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # ubuntu-24.04 镜像自带 android-37.0 与 build-tools 37.0.0，compileSdk = 37 直接用即可。
+      # 不要引入 android-actions/setup-android：它内部会跑 runner 预装的
+      # cmdline-tools 的 sdkmanager，在 JDK 21 下经常 exit code 1，把整个 job 带挂。
+      # 这里只做诊断，平台真缺了才用 sdkmanager 补（失败也不阻断，让构建阶段报明确错误）。
+      - name: Check Android SDK
+        run: |
+          set +e
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK"
+          echo "--- platforms ---"
+          ls "$SDK/platforms" 2>/dev/null
+          echo "--- build-tools ---"
+          ls "$SDK/build-tools" 2>/dev/null
+
+          if ls "$SDK/platforms" 2>/dev/null | grep -q '^android-37'; then
+            echo "android-37 已在镜像里，跳过安装"
+            exit 0
+          fi
+
+          SM=$(ls "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          echo "缺 android-37，尝试用 $SM 安装"
+          yes | "$SM" --licenses >/dev/null 2>&1
+          "$SM" --install "platforms;android-37.0" "build-tools;37.0.0" || true
+
+      # 仓库里的 gradlew 是 644（Windows 上提交的），直接 ./gradlew 会报 Permission denied
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      # 把 Secrets 里的 keystore（jks 的 base64 单行文本）解码回文件，并生成 keystore.properties
+      # build.gradle.kts 读的就是这个文件，没有它就会退回 debug 签名（装上去覆盖不了正式版）
+      - name: Decode signing key
+        env:
+          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # 先落盘再解码：容忍复制时混入的换行/空格，也避免密钥内容被 shell 解释
+          cat > /tmp/signing-key.b64 <<'B64_EOF'
+          ${{ secrets.SIGNING_KEY }}
+          B64_EOF
+          B64=$(tr -d '[:space:]' < /tmp/signing-key.b64)
+          # 只打印元信息（长度/字节数），绝不打印密钥内容本身
+          echo "SIGNING_KEY 字符数（去空白后）: ${#B64}"
+
+          # ① 变量是否配了
+          if [ "${#B64}" -eq 0 ]; then
+            echo "::error::SIGNING_KEY 为空 —— Secrets 里没配这个变量（或名字不一致）"
+            exit 1
+          fi
+          if [ -z "${KEY_STORE_PASSWORD}" ]; then
+            echo "::error::KEY_STORE_PASSWORD 为空 —— Secrets 里没配"
+            exit 1
+          fi
+          if [ -z "${KEY_ALIAS}" ]; then
+            echo "::error::KEY_ALIAS 为空 —— Secrets 里没配"
+            exit 1
+          fi
+
+          # ② 内容是否像 base64（粘了 jks 二进制会在这里露馅）
+          if printf '%s' "$B64" | grep -q '[^A-Za-z0-9+/=]'; then
+            echo "::error::SIGNING_KEY 含有非 base64 字符 —— 必须是「jks 文件的 base64 文本」，不是二进制"
+            exit 1
+          fi
+
+          # ③ 解码
+          KEYFILE=app/release-key.jks
+          printf '%s' "$B64" | base64 -d > "$KEYFILE"
+          echo "解码后字节数: $(wc -c < "$KEYFILE")"
+          rm -f /tmp/signing-key.b64
+
+          # ④ 探测 storeType：作者的 keystore 可能是 PKCS12 也可能是老式 JKS，
+          #    写死一种会在 keytool 那一步失败，所以用能打开的那个
+          TYPE=""
+          for t in PKCS12 JKS; do
+            if keytool -list -keystore "$KEYFILE" -storetype "$t" \
+                -storepass "$KEY_STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null 2>&1; then
+              TYPE="$t"
+              break
+            fi
+          done
+          if [ -z "$TYPE" ]; then
+            echo "::error::keystore 打不开或找不到别名 $KEY_ALIAS —— 检查 SIGNING_KEY / KEY_STORE_PASSWORD / KEY_ALIAS"
+            exit 1
+          fi
+          echo "keystore 校验通过（alias=$KEY_ALIAS storeType=$TYPE）"
+
+          # ⑤ 生成 build.gradle.kts 读的配置文件（.gitignore 已挡，不会进仓库）
+          {
+            echo "storeFile=app/release-key.jks"
+            echo "storePassword=${KEY_STORE_PASSWORD}"
+            echo "keyAlias=${KEY_ALIAS}"
+            echo "keyPassword=${KEY_PASSWORD:-$KEY_STORE_PASSWORD}"
+            echo "storeType=${TYPE}"
+          } > keystore.properties
+          echo "keystore.properties 已生成"
+
+      # 版本规则：
+      #  · 留空      → 沿用现有版本，不改任何文件
+      #  · 比现有高  → versionCode +1
+      #  · 比现有低  → versionCode 不动（回退版本不虚增）
+      #  · 完全一样  → versionCode 不动（重发同一版）
+      # versionCode 必须严格递增，否则新包装不上（覆盖安装会失败）
+      - name: Resolve version
+        id: version
+        env:
+          IN_NAME: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+
+          # 只取前导数字段：1.3.0-hotfix1 → 1.3.0
+          num() { printf '%s' "$1" | sed -E 's/^[vV]//; s/^[^0-9]*//; s/[^0-9.].*$//'; }
+          # 数字段之后的后缀：1.3.0-hotfix1 → -hotfix1
+          suf() { printf '%s' "$1" | sed -E 's/^[vV]//; s/^[0-9.]+//'; }
+
+          # 逐段比较，打印 gt / lt / eq；数字段相同再比后缀（空后缀比带后缀的旧）
+          cmp_ver() {
+            awk -v a="$(num "$1")" -v b="$(num "$2")" \
+                -v sa="$(suf "$1")" -v sb="$(suf "$2")" 'BEGIN{
+              n = split(a, A, "."); m = split(b, B, ".");
+              k = (n > m) ? n : m;
+              for (i = 1; i <= k; i++) {
+                x = (i <= n && A[i] != "") ? A[i] + 0 : 0;
+                y = (i <= m && B[i] != "") ? B[i] + 0 : 0;
+                if (x > y) { print "gt"; exit }
+                if (x < y) { print "lt"; exit }
+              }
+              if (sa == sb) { print "eq"; exit }
+              if (sa == "") { print "lt"; exit }
+              if (sb == "") { print "gt"; exit }
+              print (sa < sb) ? "lt" : "gt";
+            }'
+          }
+
+          # $1 新名 $2 旧名 $3 旧代号 → 新代号
+          next_code() {
+            printf '%s' "$3" | grep -qE '^[0-9]+$' || { echo 1; return; }
+            if [ "$1" = "$2" ]; then echo "$3"; return; fi
+            case "$(cmp_ver "$1" "$2")" in
+              lt) echo "$3" ;;
+              *)  echo $(( $3 + 1 )) ;;
+            esac
+          }
+
+          CK_NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
+          CK_CODE=$(grep -oP 'versionCode\s*=\s*\K\d+' app/build.gradle.kts | head -1)
+
+          NAME="${IN_NAME#v}"
+          if [ -z "$NAME" ]; then
+            NAME="$CK_NAME"
+            echo "版本留空，沿用 ${NAME}"
+          elif ! printf '%s' "$NAME" | grep -qE '^[0-9]+(\.[0-9]+)+([-.+][0-9A-Za-z.]+)*$'; then
+            echo "::error::版本号格式不对：${NAME}（支持 1.0.26 / 1.1.0-beta.1）"
+            exit 1
+          fi
+
+          CODE=$(next_code "$NAME" "$CK_NAME" "${CK_CODE:-0}")
+          if [ "$NAME" = "$CK_NAME" ] && [ "$CODE" = "$CK_CODE" ]; then
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "版本名与代号都没变"
+          else
+            echo "bump=true" >> "$GITHUB_OUTPUT"
+            echo "版本 ${CK_NAME}(${CK_CODE}) → ${NAME}(${CODE})"
+          fi
+
+          {
+            echo "version_name=${NAME}"
+            echo "version_code=${CODE}"
+            echo "tag=v${NAME}"
+          } >> "$GITHUB_OUTPUT"
+          echo "目标版本: ${NAME}(${CODE}) · tag v${NAME}"
+
+      - name: Bump version in build.gradle.kts
+        if: steps.version.outputs.bump == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version_name }}
+          CODE: ${{ steps.version.outputs.version_code }}
+        run: |
+          set -euo pipefail
+          FILE=app/build.gradle.kts
+          sed -i -E "s/versionName\s*=\s*\"[^\"]*\"/versionName = \"${VERSION}\"/" "$FILE"
+          sed -i -E "s/versionCode\s*=\s*[0-9]+/versionCode = ${CODE}/" "$FILE"
+          echo "versionName -> ${VERSION} versionCode -> ${CODE}"
+          grep -nE 'versionCode|versionName' "$FILE"
+
+      # update.md 顶部永远是一个 ## latest 段，开发中的改动都往这里加
+      # 发版这一刻把它就地改名成 ## v<版本> 更新，再在最顶上插一个新的空 latest
+      # 这样「写日志」和「发版」彻底解耦：平时只追加条目，发版不用回头改标题
+      - name: Finalize changelog
+        env:
+          VERSION: ${{ steps.version.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          if sh scripts/changelog.sh has update.md latest; then
+            sh scripts/changelog.sh finalize update.md "${VERSION}"
+          elif sh scripts/changelog.sh has update.md "${VERSION}"; then
+            # 重发同一版本时 latest 已被上次发版清空，直接复用已归档的段落
+            echo "update.md 的 latest 为空，复用已归档的 v${VERSION} 段（重发同一版本）"
+          else
+            echo "::error::update.md 的 ## latest 段没有内容 —— 发布前先把这次改动写进去"
+            exit 1
+          fi
+          echo "--- update.md 顶部 ---"
+          sed -n '1,16p' update.md
+
+      - name: Build release APK
+        run: ./gradlew :app:assembleRelease --no-daemon --build-cache
+
+      # 确认密钥真的用上了：没签名的包也能构建出来，只有验证过才算数
+      - name: Verify APK signature
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          SDK_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          TOOLS=$(ls -d "${SDK_HOME}"/build-tools/*/ 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "${TOOLS}" ] && [ -x "${TOOLS}apksigner" ]; then
+            "${TOOLS}apksigner" verify --print-certs "${APK}"
+            echo "apksigner 验证通过"
+          else
+            # 没有 apksigner 时退化为检查 Jar 签名块
+            if ! unzip -l "${APK}" | grep -q "META-INF/.*\.RSA"; then
+              echo "::error::产物未签名（缺少 META-INF/*.RSA）"
+              exit 1
+            fi
+            echo "签名校验通过（存在 META-INF/*.RSA）"
+          fi
+
+      # 改名成发布用的名字：LiftArc-v1.0.26.apk
+      - name: Rename APK
+        env:
+          VERSION: ${{ steps.version.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          OUT="dist/LiftArc-v${VERSION}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$OUT"
+          echo "发布产物: ${OUT}"
+          ls -l "$OUT"
+
+      # 构建成功后再提交版本号与日志改动，避免构建失败留下一半的脏提交
+      # 日志归档（## latest → ## v<版本> 更新）也一起进仓库，保证 tag 里的 update.md 是归档后的
+      - name: Commit version bump
+        env:
+          VERSION: ${{ steps.version.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts update.md
+          if git diff --cached --quiet; then
+            echo "版本文件与日志无变化（可能本来就是该版本），跳过提交"
+            exit 0
+          fi
+          git commit -m "chore(release): 版本号 ${VERSION}"
+          for i in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "版本提交已推送到 main"
+              exit 0
+            fi
+            echo "推送被拒，第 ${i} 次 rebase 重试…"
+            git fetch origin main
+            git rebase --autostash FETCH_HEAD
+          done
+          echo "::error::版本提交推送失败"
+          exit 1
+
+      # 幂等：同一版本一键重发时先删掉旧 tag 再打新的
+      - name: Create / update tag
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          TAG="${{ steps.version.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            git push origin ":refs/tags/${TAG}" 2>/dev/null || true
+            git tag -d "${TAG}" 2>/dev/null || true
+          fi
+          git tag "${TAG}"
+          git push origin "${TAG}"
+
+      # Release 说明直接取 update.md 里本版本的段落（上一步刚从 latest 归档出来的）
+      # `### 修复` 这种小组标题降一级，挂在版本标题下面才不会被当成平级大标题
+      - name: Extract release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          trim() {
+            awk '
+              { line[NR] = $0 }
+              END {
+                start = 1; end = NR
+                while (start <= end && line[start] ~ /^[[:space:]]*$/) start++
+                while (end >= start && line[end] ~ /^[[:space:]]*$/) end--
+                for (i = start; i <= end; i++) print line[i]
+              }'
+          }
+          {
+            echo "## v${VERSION}"
+            echo
+            sh scripts/changelog.sh extract update.md "${VERSION}" | trim | sed -E 's/^### /#### /'
+          } > release_notes.md
+          echo "--- 本次 Release 说明 ---"
+          cat release_notes.md
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: v${{ steps.version.outputs.version_name }}
+          body_path: release_notes.md
+          files: dist/LiftArc-v*.apk
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: LiftArc
+          path: dist/LiftArc-v*.apk
