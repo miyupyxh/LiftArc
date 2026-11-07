@@ -301,4 +301,16 @@
     <string name="pref_lock_widget_follow_summary">上滑时组件跟锁屏内容一起移动</string>
     <string name="settings_hide_launcher">隐藏桌面图标</string>
     <string name="settings_hide_launcher_summary">之后从 LSPosed 的模块页打开</string>
+
+    <!-- 关于页：检查更新。条目内容不在这里，来自仓库根的 update.md -->
+    <string name="about_auto_update">自动检查更新</string>
+    <string name="about_check_update">检查更新</string>
+    <string name="update_checking">检查中…</string>
+    <string name="update_latest">已是最新</string>
+    <string name="update_available">有新版本 v%1$s</string>
+    <string name="update_failed">检查失败</string>
+    <string name="update_dialog_title">发现新版本</string>
+    <string name="update_dialog_empty">这个版本没有写更新说明</string>
+    <string name="update_dialog_open">前往</string>
+    <string name="action_cancel">取消</string>
 </resources>
