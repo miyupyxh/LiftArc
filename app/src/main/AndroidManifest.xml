@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- 关于页的「检查更新」要读 GitHub 上的 update.md；没有它请求直接抛 SecurityException -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:name=".LockBarApp"
         android:allowBackup="false"

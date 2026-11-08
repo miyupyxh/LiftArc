@@ -22,15 +22,23 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.FormatQuote
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Tag
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,13 +52,18 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lockbar.app.BuildConfig
+import com.lockbar.app.Prefs
 import com.lockbar.app.R
+import com.lockbar.app.update.UpdateChecker
+import com.lockbar.app.update.UpdateInfo
+import com.lockbar.app.update.UpdateState
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -67,6 +80,26 @@ internal fun AboutScreen(onBack: () -> Unit, onOpenCredits: () -> Unit) {
     val colorScheme = MiuixTheme.colorScheme
     val textStyles = MiuixTheme.textStyles
     val uriHandler = LocalUriHandler.current
+
+    // 启动时（MainActivity.onCreate）已经发起过一次检查，这里只订阅结果；
+    // 之后用户点「检查更新」也是写进同一个 StateFlow，页面不用自己管请求。
+    val updateState by UpdateChecker.state.collectAsState()
+    // 开关跟着 Prefs 走：改了立刻落盘，下次启动按它的值决定查不查
+    var autoCheck by rememberPrefBool(Prefs.KEY_AUTO_UPDATE, true)
+    // 当前弹窗要展示的更新；null = 不显示
+    var shownUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
+
+    // 自动检查和手动检查都走这里。区别只有一条：
+    // 自动检查对同一个版本只弹一次（记住上次提示过的版本），手动点则每次都弹。
+    LaunchedEffect(updateState) {
+        val s = updateState
+        if (s is UpdateState.Found) {
+            val seen = Prefs.getString(Prefs.KEY_UPDATE_SEEN, "")
+            if (s.manual || s.info.version != seen) {
+                shownUpdate = s.info
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -176,31 +209,63 @@ internal fun AboutScreen(onBack: () -> Unit, onOpenCredits: () -> Unit) {
                 }
             }
 
-            // 下面两张单独的卡片都是「按钮」，不是只读信息，所以和上面的信息卡分开：
-            // 上一张先去本项目的 GitHub 仓库，再下面一张进引用与致谢
+            // 四行合成一张卡：访问仓库 / 自动检查更新 / 检查更新 / 引用与致谢。
+            // 全部去掉副标题 —— 这四行都是「动作」，一行说清楚就够了。
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     AboutNavRow(
                         icon = Icons.Rounded.Public,
                         title = stringResource(R.string.about_project),
-                        summary = optSummary(R.string.about_project_summary),
                         // 手机上没装浏览器 / 链接失效都不该让页面崩掉
                         onClick = { runCatching { uriHandler.openUri(PROJECT_URL) } },
                     )
-                }
-            }
-
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                    AboutSwitchRow(
+                        icon = Icons.Rounded.ArrowUpward,
+                        title = stringResource(R.string.about_auto_update),
+                        checked = autoCheck,
+                        onCheckedChange = { autoCheck = it },
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                    AboutNavRow(
+                        icon = Icons.Rounded.Refresh,
+                        title = stringResource(R.string.about_check_update),
+                        onClick = { UpdateChecker.check(manual = true) },
+                        // 状态放行尾，不占副标题位置，四行高度才一致
+                        trailing = {
+                            UpdateStatusText(
+                                state = updateState,
+                                modifier = Modifier.padding(end = 4.dp),
+                            )
+                        },
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                     AboutNavRow(
                         icon = Icons.Rounded.FormatQuote,
                         title = stringResource(R.string.about_credits),
-                        summary = optSummary(R.string.about_credits_summary),
                         onClick = onOpenCredits,
                     )
                 }
             }
+
         }
+
+        // 更新弹窗：贴底滑出，照 RestartDialog 的形态。
+        // 放在 LazyColumn 外面 —— 它是独立窗口，不属于列表的 item。
+        UpdateDialog(
+            info = shownUpdate,
+            currentVersion = BuildConfig.VERSION_NAME,
+            onDismiss = {
+                // 关掉就记住这个版本：同一个版本只在第一次看到时自动弹
+                shownUpdate?.let { Prefs.putString(Prefs.KEY_UPDATE_SEEN, it.version) }
+                shownUpdate = null
+            },
+            onOpenDownload = {
+                runCatching { uriHandler.openUri(UpdateChecker.DOWNLOAD_URL) }
+                shownUpdate?.let { Prefs.putString(Prefs.KEY_UPDATE_SEEN, it.version) }
+                shownUpdate = null
+            },
+        )
     }
 }
 
@@ -238,9 +303,17 @@ private fun AboutRow(icon: ImageVector, title: String, value: String) {
 /**
  * 关于页里的可跳转行：比 [AboutRow] 多一个按压态和右箭头。
  * 点击涟漪走 MiuixTheme 提供的 `LocalIndication`，和设置页里的偏好项手感一致。
+ *
+ * [trailing] 不传时右侧是右箭头；传了就用调用方给的（「检查更新」用它显示状态文字）。
  */
 @Composable
-private fun AboutNavRow(icon: ImageVector, title: String, summary: String?, onClick: () -> Unit) {
+private fun AboutNavRow(
+    icon: ImageVector,
+    title: String,
+    summary: String? = null,
+    onClick: () -> Unit,
+    trailing: (@Composable () -> Unit)? = null,
+) {
     val colorScheme = MiuixTheme.colorScheme
     val textStyles = MiuixTheme.textStyles
     Row(
@@ -272,11 +345,84 @@ private fun AboutNavRow(icon: ImageVector, title: String, summary: String?, onCl
             }
         }
         Spacer(Modifier.width(8.dp))
-        Icon(
-            imageVector = Icons.Rounded.ChevronRight,
-            contentDescription = null,
-            tint = colorScheme.onBackground.copy(alpha = 0.35f),
-            modifier = Modifier.size(17.dp),
-        )
+        if (trailing != null) {
+            trailing()
+        } else {
+            Icon(
+                imageVector = Icons.Rounded.ChevronRight,
+                contentDescription = null,
+                tint = colorScheme.onBackground.copy(alpha = 0.35f),
+                modifier = Modifier.size(17.dp),
+            )
+        }
     }
+}
+
+/**
+ * 关于页里的开关行：左边的图标/标题和 [AboutNavRow] 逐像素对齐，右侧换成 Miuix 的开关。
+ *
+ * 整行可点（和 `SwitchPreference` 一样），不是只有开关本体能点。
+ */
+@Composable
+private fun AboutSwitchRow(
+    icon: ImageVector,
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val colorScheme = MiuixTheme.colorScheme
+    val textStyles = MiuixTheme.textStyles
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            // 开关自带高度，上下内边距比文字行小一点，整行才和另外三行一样高
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = colorScheme.onBackground.copy(alpha = 0.55f),
+            modifier = Modifier.size(19.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = title,
+            style = textStyles.main,
+            color = colorScheme.onBackground,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(8.dp))
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/**
+ * 「检查更新」行尾巴上的状态：
+ *
+ * - 自动检查且没更新 / 失败 → 什么都不显示（不打扰）
+ * - 手动检查 → 「已是最新」「检查失败」都要回一句，否则用户不知道点没点上
+ * - 查到新版本 → 版本号，永远显示（自动检查也会显示，点进去就能看）
+ */
+@Composable
+private fun UpdateStatusText(state: UpdateState, modifier: Modifier = Modifier) {
+    val colorScheme = MiuixTheme.colorScheme
+    val textStyles = MiuixTheme.textStyles
+
+    val text = when (state) {
+        UpdateState.Idle -> null
+        is UpdateState.Checking -> stringResource(R.string.update_checking)
+        is UpdateState.UpToDate -> if (state.manual) stringResource(R.string.update_latest) else null
+        is UpdateState.Found -> stringResource(R.string.update_available, state.info.version)
+        is UpdateState.Failed -> if (state.manual) stringResource(R.string.update_failed) else null
+    } ?: return
+
+    Text(
+        text = text,
+        style = textStyles.footnote2,
+        color = if (state is UpdateState.Found) colorScheme.primary
+        else colorScheme.onSurfaceVariantSummary,
+        modifier = modifier,
+    )
 }
