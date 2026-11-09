@@ -58,6 +58,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     private static final float UNLOCK_THRESHOLD = 0.5f;
     /** 进度到 1 时内容最大上移比例，避免可见区域被裁成 0。 */
     private static final float MAX_SHIFT_RATIO = 0.96f;
+    /** 小组件固定基准（dp）：与壁纸、时钟模板和 AOD 均无关，用户偏移在此基础上叠加。 */
+    private static final float WIDGET_BASE_TOP_DP = 560f;
 
     /** {@link #onWindowIntercept}：交给系统原来的逻辑判断。 */
     static final int INTERCEPT_DEFAULT = 0;
@@ -106,6 +108,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
      * 两条 hook 路径汇到这里（见 {@link #onControlCenterOpen}），volatile 供触线程读。
      */
     private static volatile boolean sControlCenterOpen;
+    /** 系统 AodView 的真实可见状态（AodView#setVisibility  hook 回传）。 */
+    private static volatile boolean sAodVisible;
     /** {@link #resolve()} 的重试上限，避免 id 不存在时每次布局都全树查找。 */
     private static final int MAX_RESOLVE_TRY = 5;
     /** {@link #resolveClock()} 的重试上限（时间容器可能比锁屏其它部分晚出现）。 */
@@ -129,8 +133,11 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     private final XposedInterface module;
 
     private FrameLayout overlay;
-    /** 组件专用图层：插在锁屏内容之下，通知/时钟自然盖在它上面。 */
+    /** 组件专用图层：普通壁纸沉在内容下；景深时抬到主体上、通知下。 */
     private FrameLayout widgetLayer;
+    /** 景深主体检测结果与上次扫描时刻（每秒最多重扫一次）。 */
+    private boolean widgetDepthActive;
+    private long widgetDepthScanAt;
     private LockRimView rim;
     /** 液态玻璃描边条（设置项「液态玻璃实时渲染弧形描边」，1.0.22）。 */
     private LockGlassStrip strip;
@@ -164,6 +171,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     private float clockShrinkNow = 1f;
     /** 通知堆叠容器缓存（每次 sync 都遍历整个窗口太贵）。 */
     private View notifStackCache;
+    private View aodNotifStack;
     private long notifStackAt;
     /** 摆位节流：同一帧里反复计算没意义。 */
     private long lastPositionAt;
@@ -174,11 +182,16 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     /** 通知整体的额外位移（负数 = 上移）：小组件占到通知区时把通知顶上去。 */
     private float notifExtra;
     /** 我们是否曾经向系统容器写过非 0 平移（用于只归还一次）。 */
-    private boolean sharedNotifOwned;
+    /** 实际承载避让位移的容器：普通锁屏=sharedNotif，AOD=其中的通知堆叠。 */
+    private View notifOffsetView;
+    /** 进入 AOD 前的通知行位置快照：AOD 动画期间持续冻结在这里。 */
+    private final java.util.ArrayList<View> aodFrozenRows = new java.util.ArrayList<>();
+    private final java.util.IdentityHashMap<View, Integer> aodRowTargetTop =
+            new java.util.IdentityHashMap<>();
+    private float aodFrozenNotifTy;
     private boolean panelOwned;
     /** 上次量到的通知卡片数（用来决定上移量上限）。 */
     private int notifCardCount;
-    private android.animation.ValueAnimator notifExtraAnim;
     private android.animation.ValueAnimator widgetExtraAnim;
     /** 时钟当前是否处于被压短状态（做回差，避免反复抖）。 */
     private boolean clockShrunk;
@@ -284,6 +297,8 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
      * 只抬主层的话就变成“时在动、分不动”——必须两个一起抬。
      */
     private View clockSecond;
+    /** 系统 AOD 根视图（用于可见状态和 z 序，不参与组件定位）。 */
+    private View aodView;
     /** 时间本体（{@code clock_container1}），用来算“只能上移一半”的上限。 */
     private View clockTime;
     private int clockTry;
@@ -790,17 +805,10 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
     // ------------------------------------------------------------ 锁屏小组件（三选一）
 
     /**
-     * 摆位：锚在「时钟看得见的那部分」的底边 + 配置下移量，水平居中。
+     * 摆位：固定 DP 基准 + 用户上下偏移，水平居中。
      *
-     * <p>不用时钟容器的 bottom —— 那玩意儿在本 ROM 是整屏大容器，直接取 bottom 会把小组件
-     * 甩到屏幕最下面（压到勿扰模式那排上，上一版就是这么翻车的）。所以先找时钟里真正有内容的
-     * 子视图的底边；实在找不到才退到屏幕 30% 处，并且整体夹在 15%~55% 屏高之间兜底。
-     */
-    /**
-     * 摆位：节流 120ms，并且只在“真正变化”时重算 / 重设布局。
-     *
-     * <p>这个方法跑在 sync() 里，而 sync 在滑动、通知变化、屏幕亮灭时都会调；
-     * 每次都遍历时钟+通知子树会直接掉帧。
+     * <p>不读取壁纸、时钟模板或 AOD 时钟的位置，因此换壁纸、切换息屏以及时钟动画
+     * 都不会改变组件基准。只在屏幕高度不足以容纳时夹到边界内。布局更新按 300ms 节流。
      */
     private void positionLockWidgets() {
         positionLockWidgets(false);
@@ -821,23 +829,18 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         lastPositionAt = now;
 
         float d = density();
-        int widgetH = Math.round(config.lockWidgetSize * d);
-        int offset = (int) (config.lockWidgetY * d);
-        int gap = (int) (8f * d);
+        int widgetH = widgetHeightPx();
 
-        int clockTop = clockContentTop();
-        int clockBottom = clockContentBottom();
-        int notifTop = notificationTop();
-
-        // 不再压短时钟（之前那套无论有没有通知都在缩，就是你说的「始终缩小」）。
-        applyClockShrink(1f);
-        if (clockShrinkNow < 0.999f) {
-            clockBottom = clockContentBottom();
+        // AOD 不碰锁屏时钟；普通锁屏继续保持原有「不压短」行为。
+        if (!sAodVisible) {
+            applyClockShrink(1f);
         }
 
         lockWidgets.setTranslationX(config.lockWidgetX * d);
 
-        int y = clockBottom + offset;
+        // 锁屏与全屏 AOD 共用固定 DP 坐标；壁纸、时钟模板及其动画都不再参与定位。
+        float anchorDp = WIDGET_BASE_TOP_DP + config.lockWidgetY;
+        int y = widgetTopPx();
         y = Math.max(0, Math.min(Math.max(0, window.getHeight() - widgetH), y));
 
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) lockWidgets.getLayoutParams();
@@ -846,13 +849,24 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             lockWidgets.setLayoutParams(lp);
         }
         updateWidgetGlassOrigin();
-        updateNotifOffset(y, widgetH, clockTop, gap);
+        ensureWidgetLayerOrder();
         if (now - lastWidgetLog > 20000L) {
             lastWidgetLog = now;
-            ModuleLog.d("widget y=" + y + " clock=" + clockTop + ".." + clockBottom
+            ModuleLog.d("widget y=" + y + " anchorDp=" + anchorDp + " aod=" + sAodVisible
                     + " h=" + widgetH + " z=" + widgetZIndex()
+                    + " depth=" + widgetDepthActive
                     + " glass=" + lockWidgets.diag());
         }
+    }
+
+    /** 避让与摆位共用的固定坐标，保证通知计算不再等待 300ms 摆位节流。 */
+    private int widgetHeightPx() {
+        return Math.round(config.lockWidgetSize * density());
+    }
+
+    private int widgetTopPx() {
+        int y = Math.round((WIDGET_BASE_TOP_DP + config.lockWidgetY) * density());
+        return Math.max(0, Math.min(Math.max(0, window.getHeight() - widgetHeightPx()), y));
     }
 
     /**
@@ -862,7 +876,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
      * 小组件在下方、且占到了通知区 → 通知整体上移到小组件上面；
      * 小组件在上方（不影响通知）或面板已展开 → 通知不动。
      */
-    private void updateNotifOffset(int widgetTop, int widgetH, int clockTop, int gap) {
+    private void updateNotifOffset(int widgetTop, int widgetH, int gap) {
         float wanted = 0f;
         int measured = notificationTop();
         if (measured != Integer.MAX_VALUE) {
@@ -882,38 +896,24 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                 }
             }
         }
-        // 死区：差异小于 8dp 就不动，避免在阈值附近反复微调
+        // 死区只阻止微调，不能阻止重新校正被系统写回原位的通知。
         if (Math.abs(wanted - notifExtra) < 8f * density() && wanted * notifExtra >= 0f) {
+            applyNotifTranslation();
             return;
         }
         applyNotifExtra(wanted);
     }
 
-    /** 通知位移带 160ms 过渡，避免硬跳。 */
+    /** 当帧直接应用目标值，禁止「先画在原位，再用第二段动画避让」。 */
     private void applyNotifExtra(float extra) {
-        if (Math.abs(extra - notifExtra) < 0.5f) {
-            return;
+        boolean changed = Math.abs(extra - notifExtra) >= 0.5f;
+        notifExtra = extra;
+        if (changed && sAodVisible && Math.abs(extra) > 0.5f) {
+            ModuleLog.d("AOD 通知避让 offset=" + Math.round(extra));
+            ModuleLog.flush();
         }
-        if (notifExtraAnim != null) {
-            notifExtraAnim.cancel();
-        }
-        android.animation.ValueAnimator a =
-                android.animation.ValueAnimator.ofFloat(notifExtra, extra);
-        a.setDuration(160L);
-        a.addUpdateListener(animation -> {
-            notifExtra = (Float) animation.getAnimatedValue();
-            applyNotifTranslation();
-        });
-        a.addListener(new android.animation.AnimatorListenerAdapter() {
-            @Override
-            public void onAnimationEnd(android.animation.Animator animation) {
-                if (notifExtraAnim == a) {
-                    notifExtraAnim = null;
-                }
-            }
-        });
-        notifExtraAnim = a;
-        a.start();
+        // 即使 extra 没变也要重新校正：系统动画/息屏切换可能把 translationY 写回 0。
+        applyNotifTranslation();
     }
 
     /** 把 pageTy + notifExtra 合成到通知堆叠容器上。 */
@@ -933,16 +933,24 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
      * 一旦回到 0 就归还一次，之后完全交给系统，不再每次 sync 都去覆盖它。
      */
     private void applyNotifTranslation() {
-        if (sKeyguardState == 0) {
-            return;   // 不在锁屏：不碰系统这两个容器
+        if (sKeyguardState == 0 && !sAodVisible) {
+            return;   // 不在锁屏且不在 AOD：不碰系统这两个容器
+        }
+        // AOD 内绝不再写通知位移：系统 AOD 动画会覆盖 translationY，
+        // 模块每帧补写就会形成「下沉到原位再上移」的抖动。
+        if (sAodVisible) {
+            return;
+        }
+        View target = sharedNotif;
+        if (target != notifOffsetView) {
+            resetNotifOffsetView();
         }
         float notifTarget = pageTy + notifExtra;
-        if (Math.abs(notifTarget) > 0.5f) {
-            setTranslation(sharedNotif, notifTarget);
-            sharedNotifOwned = true;
-        } else if (sharedNotifOwned) {
-            setTranslation(sharedNotif, 0f);
-            sharedNotifOwned = false;
+        if (Math.abs(notifTarget) > 0.5f && target != null) {
+            setTranslation(target, notifTarget);
+            notifOffsetView = target;
+        } else if (notifOffsetView != null) {
+            resetNotifOffsetView();
         }
 
         if (Math.abs(pageTy) > 0.5f) {
@@ -952,6 +960,77 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             setTranslation(notificationPanel, 0f);
             panelOwned = false;
         }
+    }
+
+    /** 归还真被移动的容器，而不是一律写 sharedNotif。 */
+    private void resetNotifOffsetView() {
+        if (notifOffsetView != null) {
+            setTranslation(notifOffsetView, 0f);
+            notifOffsetView = null;
+        }
+    }
+
+    /** 系统 AOD 过渡动画每帧回调：把通知拉回进入 AOD 前的锁屏位置。 */
+    static void onFullAodAnimFrame() {
+        LockBarController c = sInstance;
+        if (c != null && sAodVisible) {
+            c.freezeAodNotifications();
+        }
+    }
+
+    /** 进入 AOD 前记录每条通知的窗口 Y 和通知容器位移。 */
+    private void captureAodNotifications() {
+        aodFrozenRows.clear();
+        aodRowTargetTop.clear();
+        aodFrozenNotifTy = sharedNotif == null ? 0f : sharedNotif.getTranslationY();
+        View stack = findStackByClass(sharedNotif, 0);
+        if (stack instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) stack;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                View row = g.getChildAt(i);
+                if (row == null || row.getVisibility() != View.VISIBLE || row.getHeight() <= 0) {
+                    continue;
+                }
+                int[] loc = new int[2];
+                row.getLocationInWindow(loc);
+                aodFrozenRows.add(row);
+                aodRowTargetTop.put(row, loc[1]);
+            }
+        }
+        ModuleLog.d("AOD 冻结通知 rows=" + aodFrozenRows.size()
+                + " notifTy=" + Math.round(aodFrozenNotifTy));
+    }
+
+    /** 每帧强制通知回到快照位置：系统写回多少，就补回多少。 */
+    private void freezeAodNotifications() {
+        if (aodFrozenRows.isEmpty()) {
+            return;
+        }
+        if (sharedNotif != null) {
+            setTranslation(sharedNotif, aodFrozenNotifTy);
+        }
+        for (View row : aodFrozenRows) {
+            Integer target = aodRowTargetTop.get(row);
+            if (target == null || !row.isAttachedToWindow()) {
+                continue;
+            }
+            int[] loc = new int[2];
+            row.getLocationInWindow(loc);
+            int delta = target - loc[1];
+            if (Math.abs(delta) > 1) {
+                setTranslation(row, row.getTranslationY() + delta);
+            }
+        }
+    }
+
+    private void releaseAodNotifications() {
+        for (View row : aodFrozenRows) {
+            if (row.isAttachedToWindow()) {
+                setTranslation(row, 0f);
+            }
+        }
+        aodFrozenRows.clear();
+        aodRowTargetTop.clear();
     }
 
     private static boolean isDescendant(View child, View ancestor) {
@@ -967,12 +1046,20 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
 
     /** 小组件图层当前在窗口里的索引（供日志看 z 序）。 */
     private int widgetZIndex() {
-        return overlay == null || window == null ? -1 : window.indexOfChild(overlay);
+        if (widgetLayer == null) {
+            return -1;
+        }
+        android.view.ViewParent p = widgetLayer.getParent();
+        return p instanceof ViewGroup ? ((ViewGroup) p).indexOfChild(widgetLayer) : -1;
     }
 
     /**
-     * 把小组件图层保持在锁屏内容下面：
-     * 通知、时钟都在 keyguard_root_view 里，它们自然盖在小组件上面。
+     * 调整小组件与锁屏内容的 z 序。
+     *
+     * <p>普通壁纸维持原样：小组件沉在 keyguard_root 之下，时钟自然盖在上面。
+     * 景深壁纸的主体抠图也长在 keyguard_root 里，继续沉底就会被主体整片盖住；检测到主体时
+     * 把组件抬到 root 之上、通知/密码盘/模块 overlay 之下。组件始终留在 window 直属层，
+     * 不挂进 AodView：AOD 通知就在 sharedNotif 里，组件必须停在它下面。
      */
     private void ensureWidgetLayerOrder() {
         if (widgetLayer == null || window == null) {
@@ -985,19 +1072,94 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         if (kg == null) {
             return;
         }
-        int kgIdx = window.indexOfChild(kg);
+        View rootLayer = directChildOfWindow(kg);
+        int rootIdx = window.indexOfChild(rootLayer);
         int myIdx = window.indexOfChild(widgetLayer);
-        if (kgIdx < 0 || myIdx < 0 || myIdx < kgIdx) {
-            return;   // 已经在下面了
+        if (rootIdx < 0) {
+            return;
         }
+
+        // AOD 与景深都只越过内容根；通知容器在 window 里更靠后，天然把组件压住。
+        boolean aodMode = sAodVisible;
+        View baseLayer = rootLayer;
+        int baseIdx = window.indexOfChild(baseLayer);
+        if (baseIdx < 0) {
+            return;
+        }
+
+        // 景深 View 可能在切换壁纸后才出现。每秒扫一次即可，不在每帧遍历时钟/通知树。
+        long now = SystemClock.uptimeMillis();
+        if (!aodMode && now - widgetDepthScanAt >= 1000L) {
+            java.util.ArrayList<View> subjects = new java.util.ArrayList<>();
+            collectBandSource(kg, subjects);
+            widgetDepthActive = !subjects.isEmpty();
+            widgetDepthScanAt = now;
+        }
+        boolean aboveContent = aodMode || widgetDepthActive;
+
+        View upper = null;
+        int upperIdx = Integer.MAX_VALUE;
+        if (aboveContent) {
+            View[] anchors = {sharedNotif, notificationPanel, bouncer, overlay};
+            for (View anchor : anchors) {
+                View direct = directChildOfWindow(anchor);
+                int idx = window.indexOfChild(direct);
+                if (idx > baseIdx && idx < upperIdx) {
+                    upper = direct;
+                    upperIdx = idx;
+                }
+            }
+            // 已在 AOD/root 上、且紧贴通知等上层锚点之下：无需重复 remove/add。
+            if (upper != null ? myIdx == upperIdx - 1 : myIdx > baseIdx) {
+                return;
+            }
+        } else if (myIdx >= 0 && myIdx < baseIdx) {
+            return;   // 普通壁纸：已经在内容下面
+        }
+
         try {
-            window.removeView(widgetLayer);
-            window.addView(widgetLayer, kgIdx,
-                    new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT));
-        } catch (Throwable ignored) {
-            // 重排失败就维持原样
+            ViewGroup.LayoutParams lp = widgetLayer.getLayoutParams();
+            removeWidgetFromParent();
+            int insertAt;
+            if (!aboveContent) {
+                insertAt = window.indexOfChild(baseLayer);
+            } else if (upper != null && window.indexOfChild(upper) >= 0) {
+                insertAt = window.indexOfChild(upper);
+            } else {
+                insertAt = window.indexOfChild(baseLayer) + 1;
+            }
+            insertAt = Math.max(0, Math.min(insertAt, window.getChildCount()));
+            window.addView(widgetLayer, insertAt, lp);
+            ModuleLog.d("widget z depth=" + widgetDepthActive + " aod=" + aodMode
+                    + " index=" + insertAt);
+        } catch (Throwable t) {
+            log("ensureWidgetLayerOrder failed", t);
         }
+    }
+
+    private void removeWidgetFromParent() {
+        android.view.ViewParent p = widgetLayer.getParent();
+        if (p instanceof ViewGroup) {
+            ((ViewGroup) p).removeView(widgetLayer);
+        }
+    }
+
+    private View directChildOfWindow(View anchor) {
+        return directChildOfHost(anchor, window);
+    }
+
+    /** 找到锚点在指定容器里的直属祖先；不在该容器内时返回 null。 */
+    private View directChildOfHost(View anchor, ViewGroup host) {
+        if (anchor == null || anchor == host) {
+            return null;
+        }
+        View direct = anchor;
+        android.view.ViewParent p = direct.getParent();
+        while (p instanceof View && p != host) {
+            direct = (View) p;
+            p = direct.getParent();
+        }
+        return p == host ? direct : null;
     }
 
     /** 通知盖住组件时淡出（相当于置于底层）。 */
@@ -1023,32 +1185,22 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         }
     }
 
-    /** 时钟可见内容的顶边（窗口坐标）：与 clockContentBottom 同一套判定。 */
-    private int clockContentTop() {
-        int limit = (int) (window.getHeight() * 0.70f);
-        int best = Integer.MAX_VALUE;
-        best = Math.min(best, visualTop(clockRoot, limit, 0));
-        best = Math.min(best, visualTop(clockSecond, limit, 0));
-        return best == Integer.MAX_VALUE ? 0 : best;
+    /** AOD 进入：小组件渐隐（只改透明度，可见性/层级/位置都不动，杜绝跳动）。 */
+    private void fadeWidgetOut() {
+        if (lockWidgets == null) {
+            return;
+        }
+        lockWidgets.animate().cancel();
+        lockWidgets.animate().alpha(0f).setDuration(180L).start();
     }
 
-    private int visualTop(View v, int heightLimit, int depth) {
-        if (v == null || depth > 12 || v.getVisibility() != View.VISIBLE) {
-            return Integer.MAX_VALUE;
+    /** 离开 AOD 回锁屏：小组件渐显回原位。 */
+    private void fadeWidgetIn() {
+        if (lockWidgets == null) {
+            return;
         }
-        int best = Integer.MAX_VALUE;
-        if (v.getWidth() > 0 && v.getHeight() > 0 && v.getHeight() <= heightLimit) {
-            int[] loc = new int[2];
-            v.getLocationInWindow(loc);
-            best = loc[1];
-        }
-        if (v instanceof ViewGroup) {
-            ViewGroup g = (ViewGroup) v;
-            for (int i = 0; i < g.getChildCount(); i++) {
-                best = Math.min(best, visualTop(g.getChildAt(i), heightLimit, depth + 1));
-            }
-        }
-        return best;
+        lockWidgets.animate().cancel();
+        lockWidgets.animate().alpha(1f).setDuration(180L).start();
     }
 
     /**
@@ -1135,9 +1287,12 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                 }
                 int[] loc = new int[2];
                 c.getLocationInWindow(loc);
-                // 返回的是“未平移”的基准坐标：先把我们自己的 notifExtra 扣掉，
-                // 否则下一轮会把“被我们推上去的位置”当成原始位置
-                int top = loc[1] - Math.round(notifExtra);
+                // 只扣除当前堆叠真实吃到的位移。若系统已把目标写回 0，就按 0 计算，
+                // 不能仍扣 notifExtra，否则会在“需要避让/不需要避让”之间来回跳。
+                float applied = notifOffsetView != null
+                        && (stack == notifOffsetView || isDescendant(stack, notifOffsetView))
+                        ? notifOffsetView.getTranslationY() : 0f;
+                int top = loc[1] - Math.round(applied);
                 if (top < min) {
                     continue;   // 十分钟历/状态栏那些不算通知
                 }
@@ -1162,7 +1317,22 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         return top < clockTop + (int) (8f * density());
     }
 
-    /** 取（带缓存的）通知堆叠容器。 */
+    /** AOD 必须读取 AodView 内的堆叠，不能拿普通锁屏 sharedNotif 代替。 */
+    private View aodNotificationStack() {
+        if (aodView == null) {
+            return null;
+        }
+        if (aodNotifStack == null || !aodNotifStack.isAttachedToWindow()) {
+            aodNotifStack = findStackByClass(aodView, 0);
+            if (aodNotifStack == null) {
+                // 某些全屏 AOD 实现复用窗口内其它通知容器；找不到内嵌堆叠时也要能避让。
+                aodNotifStack = findStackByClass(window, 0);
+            }
+        }
+        return aodNotifStack;
+    }
+
+    /** 取（带缓存的）通知堆叠容器；AOD 与锁屏必须共用同一份，位移才连续。 */
     private View stackView() {
         long now = SystemClock.uptimeMillis();
         if (notifStackCache == null || !notifStackCache.isAttachedToWindow()
@@ -1193,52 +1363,6 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             }
         }
         return null;
-    }
-
-    /**
-     * 时钟「实际画出来那块」的底边（窗口坐标）。
-     *
-     * <p>不能用时钟容器自身：HyperOS 的 {@code miui_keyguard_clock_container} 是整屏大容器，
-     * 取它的 bottom 会把小组件甩到屏幕最下面（上一版就是这么翻车的）；也不能只看 TextView ——
-     * 这里的数字时钟是自绘视图，一个 TextView 都没有，结果只量到日期那一行（y≈311px），
-     * 小组件就压在数字上了。
-     *
-     * <p>所以这里取「所有可见、且高度不超过 70% 屏高的子视图」的底边最大值：整屏容器和
-     * 满屏背景会被高度门槛排除，数字/日期这两种都会被算进来。
-     */
-    private int clockContentBottom() {
-        int limit = (int) (window.getHeight() * 0.70f);
-        int best = Integer.MIN_VALUE;
-        best = Math.max(best, visualBottom(clockRoot, limit, 0));
-        best = Math.max(best, visualBottom(clockSecond, limit, 0));
-        if (best == Integer.MIN_VALUE) {
-            best = Math.max(best,
-                    visualBottom(find("miui_keyguard_clock_container"), limit, 0));
-        }
-        if (best == Integer.MIN_VALUE) {
-            return (int) (window.getHeight() * 0.30f);
-        }
-        return best;
-    }
-
-    /** 子树里所有「不是整屏」的可见视图的底边最大值。 */
-    private int visualBottom(View v, int heightLimit, int depth) {
-        if (v == null || depth > 12 || v.getVisibility() != View.VISIBLE) {
-            return Integer.MIN_VALUE;
-        }
-        int best = Integer.MIN_VALUE;
-        if (v.getWidth() > 0 && v.getHeight() > 0 && v.getHeight() <= heightLimit) {
-            int[] loc = new int[2];
-            v.getLocationInWindow(loc);
-            best = loc[1] + Math.round(v.getHeight() * v.getScaleY());
-        }
-        if (v instanceof ViewGroup) {
-            ViewGroup g = (ViewGroup) v;
-            for (int i = 0; i < g.getChildCount(); i++) {
-                best = Math.max(best, visualBottom(g.getChildAt(i), heightLimit, depth + 1));
-            }
-        }
-        return best;
     }
 
     /**
@@ -1776,6 +1900,101 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         }
     }
 
+    /** 系统 {@code AodView#setVisibility} 后置回调：只在真正进入/退出 AOD 时同步。 */
+    static void onAodVisibilityChanged(Object view, int visibility) {
+        boolean visible = visibility == View.VISIBLE;
+        boolean changed = sAodVisible != visible;
+        sAodVisible = visible;
+        final LockBarController c = sInstance;
+        if (c != null && view instanceof View && isDescendant((View) view, c.window)) {
+            c.aodView = (View) view;
+        }
+        if (changed) {
+            ModuleLog.d("AOD visible=" + visible);
+            if (c != null) {
+                if (visible) {
+                    // 参考锁屏快捷方式的渐隐：只动透明度，可见性/层级/位置都不改，杜绝跳动。
+                    c.fadeWidgetOut();
+                } else {
+                    // 离开 AOD 回锁屏：渐显回原位；alpha 必须归 1，否则锁屏小组件会消失。
+                    c.fadeWidgetIn();
+                    c.releaseAodNotifications();
+                }
+            }
+        }
+        if (c == null) {
+            return;
+        }
+        if (visible) {
+            // 稳定一帧后再抓：AOD 内容此时才真正挂上，能看清通知与组件各在哪一层。
+            c.window.postDelayed(c::dumpAodHierarchy, 350L);
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            c.sync();
+        } else {
+            c.window.post(c::sync);
+        }
+    }
+
+    /** 把 AOD 真实层级写进模块日志，供定位「组件盖住通知 / 通知跳动」。 */
+    private void dumpAodHierarchy() {
+        try {
+            View stack = stackView();
+            StringBuilder sb = new StringBuilder("AOD层级\n");
+            sb.append("stack=").append(stack == null ? "-" : stack.getClass().getSimpleName())
+                    .append(" notifTop=").append(notificationTop())
+                    .append(" offset=").append(Math.round(notifExtra))
+                    .append(" offsetV=").append(notifOffsetView == null ? "-"
+                            : notifOffsetView.getClass().getSimpleName())
+                    .append(" widgetIdx=").append(widgetZIndex()).append('\n');
+            sb.append("window:\n");
+            for (int i = 0; i < window.getChildCount() && sb.length() < 3500; i++) {
+                View c = window.getChildAt(i);
+                if (c == null) continue;
+                sb.append('[').append(i).append("] ").append(idName(c)).append('/')
+                        .append(c.getClass().getSimpleName())
+                        .append(" vis=").append(c.getVisibility())
+                        .append(" a=").append(Math.round(c.getAlpha() * 100f) / 100f)
+                        .append(" ty=").append(Math.round(c.getTranslationY())).append('\n');
+            }
+            if (aodView instanceof ViewGroup) {
+                sb.append("aod:\n");
+                dumpTree((ViewGroup) aodView, sb, 0, 3);
+            }
+            if (sharedNotif instanceof ViewGroup) {
+                sb.append("notif:\n");
+                dumpTree((ViewGroup) sharedNotif, sb, 0, 2);
+            }
+            ModuleLog.d(sb.toString());
+            ModuleLog.flush();
+        } catch (Throwable t) {
+            log("dumpAodHierarchy failed", t);
+        }
+    }
+
+    private void dumpTree(ViewGroup g, StringBuilder sb, int depth, int maxDepth) {
+        if (depth > maxDepth || sb.length() > 36000) {
+            return;
+        }
+        for (int i = 0; i < g.getChildCount(); i++) {
+            View c = g.getChildAt(i);
+            if (c == null) {
+                continue;
+            }
+            for (int k = 0; k < depth; k++) {
+                sb.append("  ");
+            }
+            sb.append(i).append(' ').append(idName(c)).append('/')
+                    .append(c.getClass().getSimpleName())
+                    .append(" vis=").append(c.getVisibility())
+                    .append(" a=").append(Math.round(c.getAlpha() * 100f) / 100f)
+                    .append(" ty=").append(Math.round(c.getTranslationY())).append('\n');
+            if (c instanceof ViewGroup) {
+                dumpTree((ViewGroup) c, sb, depth + 1, maxDepth);
+            }
+        }
+    }
+
     /** {@code KeyguardStateControllerImpl#notifyKeyguardState} 回调。 */
     static void onKeyguardState(boolean showing, boolean occluded) {
         sKeyguardState = (showing && !occluded) ? 1 : 0;
@@ -1964,10 +2183,9 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         // 组件放回 overlay 里（不再往 NotificationShadeWindowView 插额外图层）：
         // 之前为了 z 序往窗口里插了一层 MatchParent 子视图，它会改变系统对
         // 窗口子视图序列的假设（通知面板的布局/可见性会受影响）。
-        // 组件单独一层，插在 keyguard_root_view **之下**：
-        // 这样锁屏上展开的通知会自然盖在组件上面（真正的底层），
-        // 而不是靠淡出去装。之前怀疑它弄坏通知中心，
-        // 后来定位到真因是 pageTy 残留，所以这层可以放回来。
+        // 初始仍插在 keyguard_root_view 之下（普通壁纸保持原行为）。
+        // ensureWidgetLayerOrder() 检测到景深主体后会抬到 root 之上、通知之下；
+        // 始终保留 window 直属层，不重 parent，避免影响通知布局与 pageTy。
         FrameLayout.LayoutParams widgetsLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP | Gravity.CENTER_HORIZONTAL);
@@ -2406,11 +2624,15 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             resetPinnedIfKeyguardBack();
         }
         bouncerWasShowing = bouncerShowing;
+        resolveAodView();
         boolean ready = keyguardRoot != null && keyguardRoot.isAttachedToWindow();
         boolean stateOk = sKeyguardState != 0;      // 0 = 明确不在锁屏；-1 = 未知，退回视图判断
         boolean interactive = isInteractive();
         boolean onKeyguard = ready && stateOk && !bouncerShowing && interactive
                 && keyguardRoot.isShown() && config.enabled;
+        // AOD 与普通灭屏由系统 AodView 区分：只让小组件显示，触摸/弧光 overlay 仍关闭。
+        boolean aodWidgets = sAodVisible && !bouncerShowing && config.enabled
+                && config.lockWidget && !sControlCenterOpen;
         if (!onKeyguard) {
             // 解锁 / 隐藏锁屏：右缘拦截标志必须归零，否则会带到桌面的通知中心
             blockCcEdgePull = false;
@@ -2421,10 +2643,11 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             // 通知容器 / 面板按在那个偏移上 —— 解锁后的通知中心就会“有通知但看不到”。
             pageTy = 0f;
             widgetExtra = 0f;
-            notifExtra = 0f;
-            if (sharedNotifOwned) {
-                setTranslation(sharedNotif, 0f);
-                sharedNotifOwned = false;
+            boolean preserveNotifOffset = aodWidgets || (!interactive && config.lockWidget);
+            if (!preserveNotifOffset) {
+                // 真正离开锁屏才归还；息屏/AOD 过渡先清零会直接把通知拉回原点。
+                notifExtra = 0f;
+                resetNotifOffsetView();
             }
             if (panelOwned) {
                 setTranslation(notificationPanel, 0f);
@@ -2444,7 +2667,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         if (onKeyguard && config.topRightHandle && !sControlCenterOpen) {
             positionTopRightBar();
         }
-        int widgetVis = onKeyguard && config.lockWidget && !sControlCenterOpen
+        int widgetVis = (onKeyguard || aodWidgets) && config.lockWidget && !sControlCenterOpen
                 ? View.VISIBLE : View.GONE;
         if (lockWidgets != null) {
             boolean becameVisible = lockWidgets.getVisibility() != widgetVis
@@ -2456,6 +2679,16 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
                 widgetLayer.setVisibility(widgetVis);
             }
             if (widgetVis == View.VISIBLE) {
+                if (!sAodVisible) {
+                    // 渐隐/渐显由 onAodVisibilityChanged 驱动；这里只兜底「GONE→VISIBLE」
+                    // 这种没经过 AOD 渐显路径的回归，避免锁屏小组件残留透明。
+                    if (becameVisible && lockWidgets.getAlpha() < 0.99f) {
+                        lockWidgets.animate().cancel();
+                        lockWidgets.setAlpha(1f);
+                    }
+                    // 通知可能在任意一次布局里出现：避让必须当帧生效，不能等摆位节流。
+                    updateNotifOffset(widgetTopPx(), widgetHeightPx(), (int) (8f * density()));
+                }
                 positionLockWidgets(becameVisible);
                 lockWidgets.ensureWallpaper();
                 if (strip != null) {
@@ -2514,6 +2747,37 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         }
     }
 
+    /** 读取系统 AodView 的当前状态；hook 负责及时叫醒，这里负责初次附着与异常回退。 */
+    private void resolveAodView() {
+        if (aodView == null || !isDescendant(aodView, window)) {
+            View previous = aodView;
+            aodView = findAodView(window, 0);
+            if (aodView != previous) {
+                aodNotifStack = null;
+            }
+        }
+        sAodVisible = aodView != null && aodView.getVisibility() == View.VISIBLE;
+    }
+
+    private View findAodView(View v, int depth) {
+        if (v == null || depth > 16) {
+            return null;
+        }
+        if ("com.android.keyguard.widget.AodView".equals(v.getClass().getName())) {
+            return v;
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                View found = findAodView(g.getChildAt(i), depth + 1);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
     /** 惰性解析锁屏相关 View（蓝图 sections 可能在窗口 attach 之后才加进来）。 */
     private void resolve() {
         resolveTry++;
@@ -2534,6 +2798,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
             detachTarget(keyguardRoot, clipRoot);
             clipRoot = new LockGlass.Clip();
             keyguardRoot = root;
+            widgetDepthScanAt = 0L;   // 新 root 可能使用另一套景深树，立即重扫
             lastApplied = Float.NaN;
             clipInstalled = false;
         }
@@ -2553,6 +2818,7 @@ final class LockBarController implements LockHandleView.Callback, LockConfig.Lis
         }
         bouncer = box;
         placeStripUnderContent();
+        ensureWidgetLayerOrder();
     }
 
     /**

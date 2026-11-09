@@ -10,17 +10,59 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.lockbar.app.BuildConfig
+import com.lockbar.app.Prefs
 import com.lockbar.app.R
+import com.lockbar.app.update.UpdateChecker
 import com.lockbar.app.update.UpdateInfo
+import com.lockbar.app.update.UpdateState
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+/**
+ * App 根页面的更新弹窗控制器。
+ *
+ * 自动开关开启时，每次检查到新版本都弹出，不记录「已提示过」；手动检查也每次都弹出。
+ * 放在根页面后，检查结果无论在哪个页面到达，都能直接提示用户。
+ */
+@Composable
+internal fun AppUpdateDialog() {
+    val updateState by UpdateChecker.state.collectAsState()
+    val uriHandler = LocalUriHandler.current
+    var shownUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
+
+    LaunchedEffect(updateState) {
+        val s = updateState
+        if (s !is UpdateState.Found) return@LaunchedEffect
+        if (s.manual || Prefs.getBoolean(Prefs.KEY_AUTO_UPDATE, true)) {
+            shownUpdate = s.info
+        }
+    }
+
+    UpdateDialog(
+        info = shownUpdate,
+        currentVersion = BuildConfig.VERSION_NAME,
+        onDismiss = { shownUpdate = null },
+        onOpenDownload = {
+            runCatching { uriHandler.openUri(UpdateChecker.DOWNLOAD_URL) }
+            shownUpdate = null
+        },
+    )
+}
 
 /**
  * 「发现新版本」弹窗。

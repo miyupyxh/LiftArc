@@ -95,6 +95,13 @@ private val dependencyCredits = listOf(
 /** 参考过实现 / 界面的项目。 */
 private val referenceCredits = listOf(
     CreditItem(
+        name = R.string.credit_hyperchanger,
+        desc = R.string.credit_hyperchanger_desc,
+        license = R.string.license_agpl3,
+        icon = Icons.Rounded.WaterDrop,
+        url = "https://github.com/ColdP/HyperChanger",
+    ),
+    CreditItem(
         name = R.string.credit_kernel,
         desc = R.string.credit_kernel_desc,
         // KernelSU 的 kernel/ 是 GPL-2.0-only，但 manager/（我们抄的底栏与动画）是 GPL-3.0-or-later

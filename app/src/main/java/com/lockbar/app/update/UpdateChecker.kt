@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 更新说明里的一行。
@@ -49,8 +50,8 @@ sealed interface UpdateState {
  * 里面的 `- ` 行就是这次要展示给用户的更新条目。发版由 GitHub Actions 完成归档，
  * 应用不用重新发就能读到新文案。
  *
- * 直连 `raw.githubusercontent.com`，失败自动换 `gh-proxy.com` 镜像再试一次
- * （国内直连 GitHub 经常是超时，不是真的没网）。
+ * 直连 `raw.githubusercontent.com`，失败自动换 `gh-proxy.com` 镜像再试一次。
+ * 镜像只提供更新说明文本；「前往」始终打开官方 GitHub Release。
  *
  * ## 版本比较
  *
@@ -74,13 +75,14 @@ object UpdateChecker {
 
     private const val RAW_URL = "https://raw.githubusercontent.com/miyupyxh/LiftArc/main/update.md"
 
-    /** GitHub 镜像站，只在直连失败时用一次。 */
+    /** GitHub 镜像站，只在直连失败时使用一次。 */
     private const val MIRROR_PREFIX = "https://gh-proxy.com/"
 
     private const val CONNECT_TIMEOUT_MS = 6_000
     private const val READ_TIMEOUT_MS = 10_000
 
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
+    private val requestSequence = AtomicLong(0)
 
     /** 关于页用 `collectAsState()` 订阅它。 */
     val state: StateFlow<UpdateState> = _state.asStateFlow()
@@ -88,18 +90,23 @@ object UpdateChecker {
     /**
      * 发起一次检查。
      *
+     * 同类请求不重复发起；自动检查进行中时允许手动检查接管，并通过请求序号丢弃
+     * 较早的自动检查结果，避免用户点击后只看到一个 `manual=false` 的静默结果。
+     *
      * @param manual true = 用户点了「检查更新」（没更新也要给反馈）；
      *               false = 启动时自动检查（没更新就保持安静）
      */
+    @Synchronized
     fun check(manual: Boolean = false) {
-        // 正在查的时候再点一次不重复发请求，但要把「这次是手动点的」记下来，
-        // 否则自动检查刚跑完、用户又点了一下，会拿到一个 manual=false 的结果而不给反馈。
-        if (_state.value is UpdateState.Checking) return
+        val current = _state.value
+        if (current is UpdateState.Checking && (current.manual || !manual)) return
 
+        val requestId = requestSequence.incrementAndGet()
         _state.value = UpdateState.Checking(manual)
         Thread({
-            _state.value = try {
+            val result = try {
                 val info = fetch()
+                Log.i(TAG, "update metadata: remote=${info.version}, installed=${BuildConfig.VERSION_NAME}, manual=$manual")
                 if (compareVersion(info.version, BuildConfig.VERSION_NAME) > 0) {
                     UpdateState.Found(info, manual)
                 } else {
@@ -109,10 +116,15 @@ object UpdateChecker {
                 Log.w(TAG, "check update failed", t)
                 UpdateState.Failed(t.message ?: "网络不可达", manual)
             }
+            synchronized(this) {
+                if (requestSequence.get() == requestId) {
+                    _state.value = result
+                }
+            }
         }, "liftarc-update-check").start()
     }
 
-    /** 直连失败换镜像，两个都失败才抛。 */
+    /** 直连失败换镜像，两个来源都失败才抛。 */
     private fun fetch(): UpdateInfo {
         val text = download(RAW_URL) ?: download(MIRROR_PREFIX + RAW_URL)
         ?: throw IOException("网络不可达")

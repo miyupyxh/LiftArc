@@ -33,11 +33,8 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Tag
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,7 +52,6 @@ import com.lockbar.app.BuildConfig
 import com.lockbar.app.Prefs
 import com.lockbar.app.R
 import com.lockbar.app.update.UpdateChecker
-import com.lockbar.app.update.UpdateInfo
 import com.lockbar.app.update.UpdateState
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
@@ -81,25 +77,10 @@ internal fun AboutScreen(onBack: () -> Unit, onOpenCredits: () -> Unit) {
     val textStyles = MiuixTheme.textStyles
     val uriHandler = LocalUriHandler.current
 
-    // 启动时（MainActivity.onCreate）已经发起过一次检查，这里只订阅结果；
-    // 之后用户点「检查更新」也是写进同一个 StateFlow，页面不用自己管请求。
+    // 这里只显示检查状态和开关；更新弹窗由 App 根页面统一处理。
     val updateState by UpdateChecker.state.collectAsState()
-    // 开关跟着 Prefs 走：改了立刻落盘，下次启动按它的值决定查不查
+    // 默认自动检查；开关改了立刻落盘，下次启动按它的值决定查不查
     var autoCheck by rememberPrefBool(Prefs.KEY_AUTO_UPDATE, true)
-    // 当前弹窗要展示的更新；null = 不显示
-    var shownUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
-
-    // 自动检查和手动检查都走这里。区别只有一条：
-    // 自动检查对同一个版本只弹一次（记住上次提示过的版本），手动点则每次都弹。
-    LaunchedEffect(updateState) {
-        val s = updateState
-        if (s is UpdateState.Found) {
-            val seen = Prefs.getString(Prefs.KEY_UPDATE_SEEN, "")
-            if (s.manual || s.info.version != seen) {
-                shownUpdate = s.info
-            }
-        }
-    }
 
     Scaffold(
         topBar = {
@@ -249,23 +230,6 @@ internal fun AboutScreen(onBack: () -> Unit, onOpenCredits: () -> Unit) {
             }
 
         }
-
-        // 更新弹窗：贴底滑出，照 RestartDialog 的形态。
-        // 放在 LazyColumn 外面 —— 它是独立窗口，不属于列表的 item。
-        UpdateDialog(
-            info = shownUpdate,
-            currentVersion = BuildConfig.VERSION_NAME,
-            onDismiss = {
-                // 关掉就记住这个版本：同一个版本只在第一次看到时自动弹
-                shownUpdate?.let { Prefs.putString(Prefs.KEY_UPDATE_SEEN, it.version) }
-                shownUpdate = null
-            },
-            onOpenDownload = {
-                runCatching { uriHandler.openUri(UpdateChecker.DOWNLOAD_URL) }
-                shownUpdate?.let { Prefs.putString(Prefs.KEY_UPDATE_SEEN, it.version) }
-                shownUpdate = null
-            },
-        )
     }
 }
 

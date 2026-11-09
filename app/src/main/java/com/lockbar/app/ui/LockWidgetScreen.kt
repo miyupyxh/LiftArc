@@ -30,7 +30,7 @@ import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-/** 锁屏小组件参数页：开关 / 大小 / 相对时钟的下移量。 */
+/** 锁屏小组件参数页：开关 / 大小 / 固定 DP 基准的上下左右偏移。 */
 @Composable
 internal fun LockWidgetScreen(onBack: () -> Unit) {
     val scrollBehavior = MiuixScrollBehavior()

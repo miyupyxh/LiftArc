@@ -162,20 +162,12 @@ public final class Prefs {
     public static final String KEY_DEBUG_SAFETY = "debug_safety";
 
     /**
-     * 关于页「自动检查更新」：打开时 App 启动后会在后台查一次。
+     * 关于页「自动检查更新」：打开时，每次进入或回到 App 都会在后台查一次。
      *
      * <p>只有 App 进程用，但照旧走 {@link #syncToFramework} —— 多一个键不影响 hook，
      * 也省得为它开一套单独的存储。
      */
     public static final String KEY_AUTO_UPDATE = "auto_update";
-
-    /**
-     * 已经自动弹过更新弹窗的版本号。
-     *
-     * <p>同一个版本只在第一次自动检查时弹，用户关掉后不再每次启动都拦一次；
-     * 手动点「检查更新」不看这个键，永远弹。
-     */
-    public static final String KEY_UPDATE_SEEN = "update_seen";
 
     private static SharedPreferences local;
     private static SharedPreferences diag;

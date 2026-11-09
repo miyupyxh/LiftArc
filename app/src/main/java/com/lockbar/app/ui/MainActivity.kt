@@ -13,17 +13,20 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 自动检查更新：只在真正的冷启动查一次。
-        // savedInstanceState != null 说明是旋转 / 深色切换之类的重建，重查一遍纯属浪费流量。
-        if (savedInstanceState == null && Prefs.getBoolean(Prefs.KEY_AUTO_UPDATE, true)) {
-            UpdateChecker.check()
-        }
-
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
             LockBarTheme {
+                // LockBarScreen 外层的 Miuix Scaffold 统一承载更新弹窗。
                 LockBarScreen()
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 每次打开或回到 App 都检查；用户关闭自动检查后不联网。
+        if (Prefs.getBoolean(Prefs.KEY_AUTO_UPDATE, true)) {
+            UpdateChecker.check()
         }
     }
 }

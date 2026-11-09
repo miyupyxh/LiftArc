@@ -214,6 +214,32 @@ final class LockBarHooks {
                     return result;
                 });
 
+        // AOD 可见性：系统界面 17.03.260226 的 AodView#setVisibility 会先写 mAodVisible，
+        // 再通知系统自己的监听器。after 回调读取同一状态，避免把普通灭屏误判成 AOD。
+        try {
+            Class<?> aodClass = classLoader.loadClass("com.android.keyguard.widget.AodView");
+            Method setVisibility = declared(aodClass, "setVisibility", int.class);
+            module.hook(setVisibility)
+                    .setId("lockbar-aod-visibility")
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            LockBarController.onAodVisibilityChanged(
+                                    chain.getThisObject(), (Integer) chain.getArg(0));
+                        } catch (Throwable t) {
+                            module.log(5, TAG, "AodView visibility hook failed", t);
+                        }
+                        return result;
+                    });
+            ModuleLog.d("AOD 可见性 hook 就位：AodView#setVisibility");
+        } catch (Throwable t) {
+            ModuleLog.w("挂不上 AodView#setVisibility（退回视图树检测）", t);
+        }
+
+        // 全屏 AOD 通知位置冻结实验已撤回：日志显示通知行不在 sharedNotif（rows=0），
+        // AOD 实际由 AodView 内的 NotificationAnimationView 覆盖层绘制，行级 hook 无效。
+
         // 控制中心开合状态（多条布尔回调互为兜底；类与方法名取自各机型 SystemUI dex 实证）：
         // 展开期间拦截不再吞事件、小白条这次按下不消费 —— 否则锁屏上滑关不掉控制中心、
         // 任何向上动作失灵，底部上滑还会误触发模块解锁（1.0.22 反馈）。

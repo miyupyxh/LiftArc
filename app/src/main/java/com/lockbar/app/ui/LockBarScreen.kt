@@ -160,49 +160,56 @@ fun LockBarScreen() {
     // 标签提到最外层：进二级页时 MainShell 被压在下层，留在里面返回就丢标签了
     var tab by rememberSaveable { mutableIntStateOf(0) }
 
-    NavDisplay(
-        backStack = backStack,
-        modifier = Modifier.fillMaxSize(),
-        effects = NavDisplayEffects(
-            cornerClipRadius = rememberNavSystemCornerRadius(),
-            backdropColor = MiuixTheme.colorScheme.background,
-        ),
-        content = {
-            entry<Route.Main> {
-                MainShell(
-                    tab = tab,
-                    onTabChange = { tab = it },
-                    onOpenSub = { name ->
-                        when (name) {
-                            ROUTE_HINT -> backStack.add(Route.Hint)
-                            ROUTE_THEME -> backStack.add(Route.Theme)
-                            ROUTE_ABOUT -> backStack.add(Route.About)
-                            ROUTE_LOG -> backStack.add(Route.Log)
-                            ROUTE_GLASS -> backStack.add(Route.Glass)
-                            ROUTE_TOP_RIGHT -> backStack.add(Route.TopRight)
-                            ROUTE_LOCK_WIDGET -> backStack.add(Route.LockWidget)
-                        }
-                    },
-                )
-            }
-            entry<Route.Hint> { HintTextScreen(onBack = { backStack.removeLastOrNull() }) }
-            // 玻璃参数：实时材质的九个旋钮（漫反射 / 模糊 / 折射 / 菲涅尔 / 高光 / 不透明度 …）
-            entry<Route.Glass> { GlassScreen(onBack = { backStack.removeLastOrNull() }) }
-            entry<Route.TopRight> { TopRightHandleScreen(onBack = { backStack.removeLastOrNull() }) }
-            entry<Route.LockWidget> { LockWidgetScreen(onBack = { backStack.removeLastOrNull() }) }
-            entry<Route.Theme> { ThemeSettingsScreen(onBack = { backStack.removeLastOrNull() }) }
-            // 关于页 → 引用与致谢：三层页，push 进去返回键/侧滑由 NavDisplay 自己接管
-            entry<Route.About> {
-                AboutScreen(
-                    onBack = { backStack.removeLastOrNull() },
-                    onOpenCredits = { backStack.add(Route.Credits) },
-                )
-            }
-            entry<Route.Credits> { CreditsScreen(onBack = { backStack.removeLastOrNull() }) }
-            // 模块日志：排查“不生效”用，装完直接发截图/复制文本给测试者
-            entry<Route.Log> { LogScreen(onBack = { backStack.removeLastOrNull() }) }
-        },
-    )
+    // OverlayDialog 依赖 Scaffold 提供的 LocalRootDialogStates。宿主放在整个 NavDisplay
+    // 外面，主页和全部二级页才都能显示更新弹窗，悬浮底栏也会被弹窗正确遮住。
+    Scaffold(
+        contentWindowInsets = WindowInsets.systemBars.only(WindowInsetsSides.Horizontal),
+    ) {
+        NavDisplay(
+            backStack = backStack,
+            modifier = Modifier.fillMaxSize(),
+            effects = NavDisplayEffects(
+                cornerClipRadius = rememberNavSystemCornerRadius(),
+                backdropColor = MiuixTheme.colorScheme.background,
+            ),
+            content = {
+                entry<Route.Main> {
+                    MainShell(
+                        tab = tab,
+                        onTabChange = { tab = it },
+                        onOpenSub = { name ->
+                            when (name) {
+                                ROUTE_HINT -> backStack.add(Route.Hint)
+                                ROUTE_THEME -> backStack.add(Route.Theme)
+                                ROUTE_ABOUT -> backStack.add(Route.About)
+                                ROUTE_LOG -> backStack.add(Route.Log)
+                                ROUTE_GLASS -> backStack.add(Route.Glass)
+                                ROUTE_TOP_RIGHT -> backStack.add(Route.TopRight)
+                                ROUTE_LOCK_WIDGET -> backStack.add(Route.LockWidget)
+                            }
+                        },
+                    )
+                }
+                entry<Route.Hint> { HintTextScreen(onBack = { backStack.removeLastOrNull() }) }
+                // 玻璃参数：实时材质的九个旋钮（漫反射 / 模糊 / 折射 / 菲涅尔 / 高光 / 不透明度 …）
+                entry<Route.Glass> { GlassScreen(onBack = { backStack.removeLastOrNull() }) }
+                entry<Route.TopRight> { TopRightHandleScreen(onBack = { backStack.removeLastOrNull() }) }
+                entry<Route.LockWidget> { LockWidgetScreen(onBack = { backStack.removeLastOrNull() }) }
+                entry<Route.Theme> { ThemeSettingsScreen(onBack = { backStack.removeLastOrNull() }) }
+                // 关于页 → 引用与致谢：三层页，push 进去返回键/侧滑由 NavDisplay 自己接管
+                entry<Route.About> {
+                    AboutScreen(
+                        onBack = { backStack.removeLastOrNull() },
+                        onOpenCredits = { backStack.add(Route.Credits) },
+                    )
+                }
+                entry<Route.Credits> { CreditsScreen(onBack = { backStack.removeLastOrNull() }) }
+                // 模块日志：排查“不生效”用，装完直接发截图/复制文本给测试者
+                entry<Route.Log> { LogScreen(onBack = { backStack.removeLastOrNull() }) }
+            },
+        )
+        AppUpdateDialog()
+    }
 }
 
 // ----------------------------------------------------------------------- 主框架

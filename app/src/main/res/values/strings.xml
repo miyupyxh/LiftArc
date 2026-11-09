@@ -242,6 +242,8 @@
     <string name="credit_kotlinx">kotlinx</string>
     <string name="credit_kotlinx_desc">协程、Flow 与数据序列化</string>
 
+    <string name="credit_hyperchanger">HyperChanger</string>
+    <string name="credit_hyperchanger_desc">锁屏小组件系统柔光玻璃材质适配（btm_m）；许可与修改说明已随应用附带</string>
     <string name="credit_kernel">KernelSU</string>
     <string name="credit_kernel_desc">悬浮底栏、二级页转场与页面结构</string>
     <string name="credit_liquidglass">AndroidLiquidGlass</string>
@@ -251,6 +253,7 @@
 
     <string name="license_apache2">Apache-2.0</string>
     <string name="license_gpl3">GPL-3.0</string>
+    <string name="license_agpl3">AGPL-3.0-or-later</string>
     <string name="license_ref"></string>
 
     <!-- 诊断分组标题（设置页使用；参数页的诊断正文已移除） -->
@@ -292,7 +295,7 @@
     <string name="log_empty">还没有日志。\n\n请依次确认：\n1. LSPosed 中已启用本模块\n2. 作用域勾选了「系统界面」(com.android.systemui)\n3. 重启系统界面或重启手机\n\n三项都确认过仍为空，请到 LSPosed 的日志页查看。</string>
     <string name="group_lock_widget">锁屏小组件</string>
     <string name="pref_lock_widget">锁屏小组件</string>
-    <string name="pref_lock_widget_summary">时钟下方显示天气、步数与电量</string>
+    <string name="pref_lock_widget_summary">固定位置显示天气、步数与电量</string>
     <string name="pref_lock_widget_params">锁屏小组件参数</string>
     <string name="pref_lock_widget_params_summary">大小与位置</string>
     <string name="pref_lock_widget_shrink_clock">时钟自动避让</string>

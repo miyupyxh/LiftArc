@@ -101,7 +101,7 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     private static final String KEY_TOP_RIGHT_BAR_OPACITY = "top_right_bar_opacity";
     /** 锁屏小组件：天气 / 步数 / 电池这一排小圆。 */
     private static final String KEY_LOCK_WIDGET = "lock_widget";
-    /** 小组件相对时钟底部的下移量（dp）。 */
+    /** 小组件相对固定屏幕基准的下移量（dp；与壁纸和 AOD 无关）。 */
     private static final String KEY_LOCK_WIDGET_Y = "lock_widget_y";
     /** 小组件水平偏移（dp）。 */
     private static final String KEY_LOCK_WIDGET_X = "lock_widget_x";
@@ -295,7 +295,7 @@ final class LockConfig implements SharedPreferences.OnSharedPreferenceChangeList
     float topRightBarOpacity = 0.85f;
     /** 锁屏小组件（天气 / 步数 / 电池）。 */
     boolean lockWidget;
-    /** 小组件相对时钟底部的下移量（dp）。 */
+    /** 小组件相对固定屏幕基准的下移量（dp；与壁纸和 AOD 无关）。 */
     float lockWidgetY = 8f;
     /** 小组件水平偏移（dp，0 = 居中）。 */
     float lockWidgetX;

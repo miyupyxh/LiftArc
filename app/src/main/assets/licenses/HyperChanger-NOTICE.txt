@@ -1,0 +1,29 @@
+HyperChanger — native lockscreen widget material
+Copyright 2026 btm_m
+https://github.com/ColdP/HyperChanger
+
+Referenced original files are licensed under the GNU Affero General Public
+License, version 3 or later (AGPL-3.0-or-later): HyperSystemUiModule.kt widget
+soft-glass methods and SHORTCUT_GLASS_PARAMETERS, and HyperOsBackdropMaterial.kt.
+The user-supplied reference snapshot was examined on 2026-11-09.
+
+The native compositor initialization sequence and 42-value optical recipe are
+adapted in com.lockbar.app.xposed.LockWidgetGlass. This adapted source file
+retains its AGPL-3.0-or-later notice.
+
+Modifications for LiftArc, 2026-11-09: Java adapter for widget-owned sampler and
+path-consumer pairs; checked framework View and Paint calls; nonzero-size
+initialization, SDF/native clip updates and Paint optical-edge metadata;
+rollback after partial failure; detach/re-attach cleanup. The custom-path API
+contract was checked against the supplied ROM's TimeView drawing calls.
+Widget foreground/layout, AOD behavior and notification hooks were not imported
+from HyperChanger. No OEM implementation classes or bytecode are bundled.
+
+The complete AGPL version 3 text accompanies this notice as
+HyperChanger-AGPL-3.0.txt. Original LiftArc files retain their existing licenses.
+When conveying a combined build, preserve the notices and provide complete
+corresponding source including modifications, as required by the applicable
+GPLv3/AGPLv3 terms and their section 13 combination provisions.
+
+LiftArc project: https://github.com/miyupyxh/LiftArc
+An upstream URL alone is not the corresponding source of a modified build.

@@ -8,19 +8,19 @@ import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 /**
- * 锁屏小组件：**三件拼一排** —— 左边电池（条形），右边两个环形（天气、步数）。
+ * 锁屏小组件：左边电池（条形），右边天气、步数两个环形。
  *
- * <p>几何照搬参照包：电池是 {@code lock_screen_slogan} 的 145×45dp 版式
- * （16×23dp 电池图标 + 16sp 百分比 + 145×11dp 进度条）；两个环是
- * {@code layout_weather_multi_row} / {@code layout_lock_health_row_item} 的 81dp 版式，
- * 环本身按 {@code TemperatureRangeProgressBar#pgRing} 的路径画，材质用系统
- * {@code MiuiBlurUtils.setGlassEffect} 挂的真玻璃。
+ * <p>保留原有 145×66dp 电池版式、81dp 环形与 14dp 间距。系统柔光材质只绑定
+ * 三个独立的背景子 View；图标、文字、指针和电量填充在其上绘制，不参与玻璃遮罩。
+ * 外层仍是 Controller 持有的同一个控件，位置、触摸与 AOD 渐隐/渐显不另起一套状态。
  *
- * <p>三件里任何一件没数据就只少画那一件（不画空圈），宽度按实际显示件数重算。
+ * <p>没数据的项目不占位。原生接口不可用时才保留旧背景，并明确记录 fallback。
  */
-final class LockWidgetView extends View {
+final class LockWidgetView extends ViewGroup {
 
     /** 环形基准直径（dp），与参照版式一致。 */
     private static final float RING_BASE = 81f;
@@ -41,14 +41,11 @@ final class LockWidgetView extends View {
     private final RectF tmpRect = new RectF();
     private final RectF oval = new RectF();
 
-    /** 每个环的「玻璃底」离屏缓存：玻璃+白霜+细边只画一次，之后每帧就一次 drawBitmap。 */
-    private final android.graphics.Bitmap[] ringBgCache = new android.graphics.Bitmap[2];
-    private final int[] ringBgKey = new int[]{Integer.MIN_VALUE, Integer.MIN_VALUE};
-    private final long[] ringBgAt = new long[]{0L, 0L};
-    private final Canvas cacheCanvas = new Canvas();
     private final Path ringPath = new Path();
+    private final GlassSurface batteryGlass;
+    private final GlassSurface weatherGlass;
+    private final GlassSurface stepsGlass;
 
-    private long lastGlassLog;
     private float sizeDp = -1f;
     private float k = 1f;
     private float density = 3f;
@@ -78,18 +75,11 @@ final class LockWidgetView extends View {
     private static int wallId = Integer.MIN_VALUE;
     private long lastWallCheck;
     private static android.graphics.BitmapShader wallpaperShader;
-    private static float shaderScale;
-    private static int shaderW;
-    private static int shaderH;
 
     /** 内嵌 PNG 解出来的电池图标（两态，只解一次）。 */
     private static android.graphics.Bitmap iconNormal;
     private static android.graphics.Bitmap iconCharging;
     private static boolean iconsDecoded;
-
-    private static java.lang.reflect.Method mSetGlassEffect;
-    private static boolean glassResolved;
-    private boolean glassBound;
 
     /** 机型文字（跟参照包的 BatteryCustomTextView 一样贴在电量下面）。 */
     private final String modelText;
@@ -108,6 +98,15 @@ final class LockWidgetView extends View {
         barBg.setStyle(Paint.Style.FILL);
         barBg.setColor(0x33FFFFFF);
         modelText = resolveModelName();
+        setClipChildren(false);
+        setClipToPadding(false);
+        setDescendantFocusability(FOCUS_BLOCK_DESCENDANTS);
+        batteryGlass = new GlassSurface(context, "battery-track", false);
+        weatherGlass = new GlassSurface(context, "weather-ring", true);
+        stepsGlass = new GlassSurface(context, "steps-ring", true);
+        addView(batteryGlass, new LayoutParams(0, 0));
+        addView(weatherGlass, new LayoutParams(0, 0));
+        addView(stepsGlass, new LayoutParams(0, 0));
         setSizeDp(RING_BASE);
     }
 
@@ -232,11 +231,30 @@ final class LockWidgetView extends View {
             w -= gapPx();
         }
         setMeasuredDimension(Math.max(0, Math.round(w)), Math.max(1, Math.round(h)));
+
+        // 背景与前景共用同一组浮点几何。子 View 取整后的余量留在 Path 中，
+        // 不因换成原生材质而改变环心、间距或电池轨道的半像素位置。
+        float x = 0f;
+        float batteryTop = (h - px(BATTERY_BASE_H)) / 2f;
+        batteryGlass.prepare(hasBattery, x, batteryTrackTop(batteryTop),
+                px(BATTERY_BASE), px(11f));
+        if (hasBattery) x += px(BATTERY_BASE) + gapPx();
+        weatherGlass.prepare(hasWeather, x, 0f, h, h);
+        if (hasWeather) x += h + gapPx();
+        stepsGlass.prepare(hasSteps, x, 0f, h, h);
     }
 
     @Override
-    protected void onDraw(Canvas canvas) {
-        super.onDraw(canvas);
+    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+        batteryGlass.place();
+        weatherGlass.place();
+        stepsGlass.place();
+    }
+
+    @Override
+    protected void dispatchDraw(Canvas canvas) {
+        // 先绘制独立玻璃背景，再画前景；不能把整行文字当成系统玻璃的遮罩。
+        super.dispatchDraw(canvas);
         if (visibleCount() == 0) {
             return;
         }
@@ -259,6 +277,148 @@ final class LockWidgetView extends View {
         }
     }
 
+    /**
+     * 每个组件自己的采样容器与路径消费者。采样容器不画模糊底板；
+     * 子 View 直接用带 setGlassEffect 标志的 Paint 绘制原有 Path。
+     */
+    private final class GlassSurface extends FrameLayout {
+        private final LockWidgetGlass material;
+        private final boolean ring;
+        private final Path maskPath = new Path();
+        private final Paint marker = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final PathRenderer renderer;
+        private boolean present;
+        private float shapeX = Float.NaN;
+        private float shapeY;
+        private float shapeW;
+        private float shapeH;
+        private int layoutLeft;
+        private int layoutTop;
+        private int layoutRight;
+        private int layoutBottom;
+
+        GlassSurface(Context context, String label, boolean ring) {
+            super(context);
+            this.ring = ring;
+            setWillNotDraw(false);
+            setClipChildren(false);
+            setClipToPadding(false);
+            setClickable(false);
+            setFocusable(false);
+            setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            marker.setStyle(Paint.Style.FILL);
+            marker.setColor(Color.WHITE);
+            renderer = new PathRenderer(context);
+            material = new LockWidgetGlass(renderer, this, marker, label);
+            addView(renderer, new FrameLayout.LayoutParams(
+                    LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        }
+
+        void prepare(boolean show, float x, float y, float w, float h) {
+            present = show;
+            setVisibility(show ? View.VISIBLE : View.INVISIBLE);
+            if (!show) {
+                material.detach();
+                shapeX = Float.NaN;
+                layoutLeft = layoutTop = layoutRight = layoutBottom = 0;
+                measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.EXACTLY),
+                        MeasureSpec.makeMeasureSpec(0, MeasureSpec.EXACTLY));
+                return;
+            }
+            if (shapeX != x || shapeY != y || shapeW != w || shapeH != h) {
+                shapeX = x;
+                shapeY = y;
+                shapeW = w;
+                shapeH = h;
+                layoutLeft = (int) Math.floor(x);
+                layoutTop = (int) Math.floor(y);
+                layoutRight = (int) Math.ceil(x + w);
+                layoutBottom = (int) Math.ceil(y + h);
+                float localX = x - layoutLeft;
+                float localY = y - layoutTop;
+                maskPath.reset();
+                if (ring) {
+                    buildRingPath(maskPath, localX, localY, w);
+                } else {
+                    maskPath.addRoundRect(localX, localY, localX + w, localY + h,
+                            h / 2f, h / 2f, Path.Direction.CW);
+                }
+                renderer.invalidate();
+            }
+            measure(MeasureSpec.makeMeasureSpec(layoutRight - layoutLeft, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(layoutBottom - layoutTop, MeasureSpec.EXACTLY));
+        }
+
+        void place() {
+            layout(layoutLeft, layoutTop, layoutRight, layoutBottom);
+            bindMaterial();
+        }
+
+        boolean hasNativeMaterial() {
+            return present && material.isBound();
+        }
+
+        private void bindMaterial() {
+            if (!present) {
+                material.detach();
+                return;
+            }
+            boolean wasBound = material.isBound();
+            boolean nativeReady = ring ? material.bind() : material.bindBatteryTrack(shapeH);
+            if (wasBound != nativeReady) {
+                renderer.invalidate();
+                LockWidgetView.this.invalidate();
+            }
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            material.detach();
+            super.onDetachedFromWindow();
+        }
+
+        private final class PathRenderer extends View {
+            PathRenderer(Context context) {
+                super(context);
+                setWillNotDraw(false);
+                setClickable(false);
+                setFocusable(false);
+                setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+                // 路径自身定义玻璃形状。Outline 的几何裁切不能代替 native 路径 SDF，
+                // 更不能把光学边缘提前裁掉；边界由 setMiGlassClip 单独提供。
+                setClipToOutline(false);
+            }
+
+            @Override
+            protected void onDraw(Canvas canvas) {
+                super.onDraw(canvas);
+                if (!present || !material.isBound() || !canvas.isHardwareAccelerated()) return;
+                canvas.drawPath(maskPath, marker);
+                material.onDrawSubmitted();
+            }
+
+            @Override
+            protected void onAttachedToWindow() {
+                super.onAttachedToWindow();
+                // 父采样层与子绘制层均已 attach 后重绑，覆盖层序修正的 detach/re-attach。
+                if (material != null) bindMaterial();
+            }
+
+            @Override
+            protected void onWindowVisibilityChanged(int visibility) {
+                super.onWindowVisibilityChanged(visibility);
+                if (visibility == View.VISIBLE && material != null) bindMaterial();
+            }
+        }
+    }
+
+    private boolean nativeMaterialsReady() {
+        return visibleCount() > 0
+                && (!hasBattery || batteryGlass.hasNativeMaterial())
+                && (!hasWeather || weatherGlass.hasNativeMaterial())
+                && (!hasSteps || stepsGlass.hasNativeMaterial());
+    }
+
     // ------------------------------------------------------------------ 环形
 
     /**
@@ -273,42 +433,38 @@ final class LockWidgetView extends View {
         float inset = size * (20f / 243f);
         oval.set(left + inset, top + inset, left + size - inset, top + size - inset);
         float r = oval.width() / 2f;
-        float capR = size * (18f / 243f);
+        buildRingPath(ringPath, left, top, size);
 
-        ringPath.reset();
-        arc(ringPath, cx, cy, r + capR, r + capR, 150f, 390f, 60, true);
-        arc(ringPath, cx + 0.8660254f * r, cy + 0.5f * r, capR, capR, 390f, 570f, 15, false);
-        arc(ringPath, cx, cy, r - capR, r - capR, 390f, 150f, 60, false);
-        arc(ringPath, cx - 0.8660254f * r, cy + 0.5f * r, capR, capR, 330f, 510f, 15, false);
-        ringPath.close();
-
-        // 玻璃：GPU BitmapShader；矩阵使用 overlay 合成后的屏幕原点，随页面/时钟平移实时采样。
-        int[] viewLoc = new int[2];
-        if (samplingOriginX != Integer.MIN_VALUE && samplingOriginY != Integer.MIN_VALUE) {
-            viewLoc[0] = samplingOriginX;
-            viewLoc[1] = samplingOriginY;
-        } else {
-            getLocationInWindow(viewLoc);
+        GlassSurface background = slot == 0 ? weatherGlass : stepsGlass;
+        if (!canvas.isHardwareAccelerated() || !background.hasNativeMaterial()) {
+            // 仅原生接口不可用时保留旧版背景；成功时绝不叠加位图/假高光遮住系统材质。
+            int[] viewLoc = new int[2];
+            if (samplingOriginX != Integer.MIN_VALUE && samplingOriginY != Integer.MIN_VALUE) {
+                viewLoc[0] = samplingOriginX;
+                viewLoc[1] = samplingOriginY;
+            } else {
+                getLocationInWindow(viewLoc);
+            }
+            updateGlassShader(viewLoc[0], viewLoc[1]);
+            boolean glassDrawn = wallpaperShader != null;
+            if (glassDrawn) {
+                glassPaint.setShader(wallpaperShader);
+                glassPaint.setStyle(Paint.Style.FILL);
+                glassPaint.setAlpha(255);
+                glassPaint.setFilterBitmap(true);
+                canvas.drawPath(ringPath, glassPaint);
+                glassPaint.setShader(null);
+            }
+            ringFillPaint.setShader(null);
+            ringFillPaint.setStyle(Paint.Style.FILL);
+            ringFillPaint.setColor(glassDrawn ? 0x1CFFFFFF : 0x55FFFFFF);
+            canvas.drawPath(ringPath, ringFillPaint);
+            ringFillPaint.setStyle(Paint.Style.STROKE);
+            ringFillPaint.setStrokeWidth(Math.max(1f, size * (2.5f / 243f)));
+            ringFillPaint.setColor(0x5CFFFFFF);
+            canvas.drawPath(ringPath, ringFillPaint);
+            ringFillPaint.setStyle(Paint.Style.FILL);
         }
-        updateGlassShader(viewLoc[0], viewLoc[1]);
-        boolean glassDrawn = wallpaperShader != null;
-        if (glassDrawn) {
-            glassPaint.setShader(wallpaperShader);
-            glassPaint.setStyle(Paint.Style.FILL);
-            glassPaint.setAlpha(255);
-            glassPaint.setFilterBitmap(true);
-            canvas.drawPath(ringPath, glassPaint);
-            glassPaint.setShader(null);
-        }
-        ringFillPaint.setShader(null);
-        ringFillPaint.setStyle(Paint.Style.FILL);
-        ringFillPaint.setColor(glassDrawn ? 0x1CFFFFFF : 0x55FFFFFF);
-        canvas.drawPath(ringPath, ringFillPaint);
-        ringFillPaint.setStyle(Paint.Style.STROKE);
-        ringFillPaint.setStrokeWidth(Math.max(1f, size * (2.5f / 243f)));
-        ringFillPaint.setColor(0x5CFFFFFF);
-        canvas.drawPath(ringPath, ringFillPaint);
-        ringFillPaint.setStyle(Paint.Style.FILL);
 
         // 指针
         double angle = Math.toRadians(150f + 240f * ratio);
@@ -376,7 +532,7 @@ final class LockWidgetView extends View {
     }
 
     /** 把环路径建到 (left, top) 为原点的坐标系里（左/上都是该环自己的左上角）。 */
-    private void buildRingPath(Path path, float left, float top, float size) {
+    private static void buildRingPath(Path path, float left, float top, float size) {
         float cx = left + size / 2f;
         float cy = top + size / 2f;
         float inset = size * (20f / 243f);
@@ -388,165 +544,6 @@ final class LockWidgetView extends View {
         arc(path, cx, cy, r - capR, r - capR, 390f, 150f, 60, false);
         arc(path, cx - 0.8660254f * r, cy + 0.5f * r, capR, capR, 330f, 510f, 15, false);
         path.close();
-    }
-
-    /**
-     * 环的「玻璃底」离屏位图：玻璃采样 + 白霜 + 细边，尺寸/位置/壁纸不变就一直复用。
-     *
-     * <p>原来每帧都要 clipPath + 采样整张壁纸，最费的就是这一段；现在每帧只剩一次 blit。
-     */
-    private android.graphics.Bitmap ensureRingBg(int slot, float size, int absX, int absY) {
-        int px = Math.round(size);
-        if (px <= 0 || slot < 0 || slot > 1) {
-            return null;
-        }
-        // 位置量化到 8px + 重建间隔 150ms：
-        // 通知动画期间小组件会一直微调位置，
-        // 若每次都重建离屏位图（clipPath + 采样壁纸）反而更卡。
-        int qx = Math.round(absX / 8f);
-        int qy = Math.round(absY / 8f);
-        int key = (px * 31 + qx) * 31 + qy;
-        android.graphics.Bitmap bmp = ringBgCache[slot];
-        if (bmp != null && !bmp.isRecycled() && bmp.getWidth() == px) {
-            if (ringBgKey[slot] == key) {
-                return bmp;
-            }
-            if (android.os.SystemClock.uptimeMillis() - ringBgAt[slot] < 150L) {
-                return bmp;   // 先用旧的顶着，效果差不易察觉
-            }
-        }
-        try {
-            if (bmp == null || bmp.isRecycled() || bmp.getWidth() != px) {
-                if (bmp != null && !bmp.isRecycled()) {
-                    bmp.recycle();
-                }
-                bmp = android.graphics.Bitmap.createBitmap(
-                        px, px, android.graphics.Bitmap.Config.ARGB_8888);
-                ringBgCache[slot] = bmp;
-            }
-            bmp.eraseColor(0);
-            cacheCanvas.setBitmap(bmp);
-            Path p = new Path();
-            buildRingPath(p, 0f, 0f, px);
-
-            if (wallpaper != null && !wallpaper.isRecycled()) {
-                cacheCanvas.save();
-                cacheCanvas.clipPath(p);
-                drawWallpaperRegion(cacheCanvas, px, px, absX, absY);
-                cacheCanvas.restore();
-            }
-            ringFillPaint.setShader(null);
-            ringFillPaint.setStyle(Paint.Style.FILL);
-            ringFillPaint.setColor(wallpaper != null ? 0x1CFFFFFF : 0x55FFFFFF);
-            cacheCanvas.drawPath(p, ringFillPaint);
-            ringFillPaint.setStyle(Paint.Style.STROKE);
-            ringFillPaint.setStrokeWidth(Math.max(1f, px * (2.5f / 243f)));
-            ringFillPaint.setColor(0x5CFFFFFF);
-            cacheCanvas.drawPath(p, ringFillPaint);
-            ringFillPaint.setStyle(Paint.Style.FILL);
-            cacheCanvas.setBitmap(null);
-
-            ringBgKey[slot] = key;
-            ringBgAt[slot] = android.os.SystemClock.uptimeMillis();
-            return bmp;
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
-    /**
-     * 把壁纸里「这块控件正下方」的区域裁进给定路径。
-     *
-     * <p>壁纸按屏幕 center-crop 铺，所以先把控件在屏幕上的位置换算回壁纸坐标，再
-     * {@code drawBitmap(src, dst)} —— 不用 shader 矩阵，省得坐标算歪了看起来像「透明」。
-     *
-     * @return 是否真的画上了壁纸（false = 没壁纸，调用方退回磨砂白）
-     */
-    private boolean drawGlassIntoPath(Canvas canvas, Path path, int[] viewLoc) {
-        android.graphics.Bitmap bmp = wallpaper;
-        if (bmp == null || bmp.isRecycled() || getWidth() <= 0 || getHeight() <= 0) {
-            return false;
-        }
-        int screenW = getResources().getDisplayMetrics().widthPixels;
-        int screenH = getResources().getDisplayMetrics().heightPixels;
-        float scale = Math.max(screenW / (float) bmp.getWidth(),
-                screenH / (float) bmp.getHeight());
-        float offX = (screenW - bmp.getWidth() * scale) * 0.5f;
-        float offY = (screenH - bmp.getHeight() * scale) * 0.5f;
-
-        float sx = (viewLoc[0] - offX) / scale;
-        float sy = (viewLoc[1] - offY) / scale;
-        float sw = getWidth() / scale;
-        float sh = getHeight() / scale;
-        if (sx < 0) {
-            sw += sx;
-            sx = 0;
-        }
-        if (sy < 0) {
-            sh += sy;
-            sy = 0;
-        }
-        sw = Math.min(sw, bmp.getWidth() - sx);
-        sh = Math.min(sh, bmp.getHeight() - sy);
-        if (sw <= 1f || sh <= 1f) {
-            return false;
-        }
-
-        canvas.save();
-        canvas.clipPath(path);
-        glassPaint.setShader(null);
-        glassPaint.setStyle(Paint.Style.FILL);
-        glassPaint.setAlpha(255);
-        glassPaint.setFilterBitmap(true);
-        canvas.drawBitmap(bmp,
-                new android.graphics.Rect(Math.round(sx), Math.round(sy),
-                        Math.round(sx + sw), Math.round(sy + sh)),
-                new android.graphics.Rect(0, 0, getWidth(), getHeight()),
-                glassPaint);
-        canvas.restore();
-        return true;
-    }
-
-    /** 把「屏幕矩形 (absX, absY, w, h)」对应的壁纸区域画到画布的 (0,0,w,h)。 */
-    private boolean drawWallpaperRegion(Canvas canvas, int w, int h, int absX, int absY) {
-        android.graphics.Bitmap bmp = wallpaper;
-        if (bmp == null || bmp.isRecycled() || w <= 0 || h <= 0) {
-            return false;
-        }
-        int screenW = getResources().getDisplayMetrics().widthPixels;
-        int screenH = getResources().getDisplayMetrics().heightPixels;
-        float scale = Math.max(screenW / (float) bmp.getWidth(),
-                screenH / (float) bmp.getHeight());
-        float offX = (screenW - bmp.getWidth() * scale) * 0.5f;
-        float offY = (screenH - bmp.getHeight() * scale) * 0.5f;
-
-        float sx = (absX - offX) / scale;
-        float sy = (absY - offY) / scale;
-        float sw = w / scale;
-        float sh = h / scale;
-        if (sx < 0) {
-            sw += sx;
-            sx = 0;
-        }
-        if (sy < 0) {
-            sh += sy;
-            sy = 0;
-        }
-        sw = Math.min(sw, bmp.getWidth() - sx);
-        sh = Math.min(sh, bmp.getHeight() - sy);
-        if (sw <= 1f || sh <= 1f) {
-            return false;
-        }
-        glassPaint.setShader(null);
-        glassPaint.setStyle(Paint.Style.FILL);
-        glassPaint.setAlpha(255);
-        glassPaint.setFilterBitmap(true);
-        canvas.drawBitmap(bmp,
-                new android.graphics.Rect(Math.round(sx), Math.round(sy),
-                        Math.round(sx + sw), Math.round(sy + sh)),
-                new android.graphics.Rect(0, 0, w, h),
-                glassPaint);
-        return true;
     }
 
     private static void arc(Path path, float cx, float cy, float rx, float ry,                            float startDeg, float endDeg, int steps, boolean move) {
@@ -618,6 +615,11 @@ final class LockWidgetView extends View {
         return android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.length, o);
     }
 
+    private float batteryTrackTop(float blockTop) {
+        float modelTop = blockTop + px(23f) + px(2f);
+        return modelTop + 16f * k * density + px(8f);
+    }
+
     private void drawBatteryBlock(Canvas canvas, float left, float top, float w, float h) {
         float iconW = px(16f);
         float iconH = px(23f);
@@ -661,10 +663,12 @@ final class LockWidgetView extends View {
         captionPaint.setTextAlign(Paint.Align.CENTER);
 
         // 进度条 145×11dp
-        float barTop = modelTop + captionPaint.getTextSize() + px(8f);
+        float barTop = batteryTrackTop(top);
         float barH = px(11f);
-        tmpRect.set(left, barTop, left + w, barTop + barH);
-        canvas.drawRoundRect(tmpRect, barH / 2f, barH / 2f, barBg);
+        if (!canvas.isHardwareAccelerated() || !batteryGlass.hasNativeMaterial()) {
+            tmpRect.set(left, barTop, left + w, barTop + barH);
+            canvas.drawRoundRect(tmpRect, barH / 2f, barH / 2f, barBg);
+        }
         float fill = w * (pct / 100f);
         if (fill > 0f) {
             ringFillPaint.setColor(accent);
@@ -675,45 +679,30 @@ final class LockWidgetView extends View {
 
     // ------------------------------------------------------------------ 系统玻璃
 
-    private static void resolveGlass() {
-        if (glassResolved) {
-            return;
-        }
-        glassResolved = true;
-        try {
-            Class<?> c = Class.forName("com.miui.clock.utils.MiuiBlurUtils");
-            mSetGlassEffect = c.getMethod("setGlassEffect", Paint.class, boolean.class);
-        } catch (Throwable ignored) {
-            mSetGlassEffect = null;
-        }
-    }
-
-    /** 诊断：壁纸 / shader 是否就绪，写到模块日志里。 */
+    /** 诊断只报告实际绑定结果，不再把壁纸 shader 称为系统玻璃。 */
     String diag() {
-        return (wallpaper != null ? "bmp" : "nobmp")
-                + (wallpaperShader != null ? "/shader" : "/noshader")
-                + (glassBound ? "/sysglass" : "/nosys")
+        int count = (batteryGlass.hasNativeMaterial() ? 1 : 0)
+                + (weatherGlass.hasNativeMaterial() ? 1 : 0)
+                + (stepsGlass.hasNativeMaterial() ? 1 : 0);
+        return (nativeMaterialsReady() ? "native-path-configured" : "fallback/pending")
+                + "(" + count + "/" + visibleCount() + ")"
                 + (charging ? "/charging" : "/idle")
                 + "@" + getWidth() + "x" + getHeight();
     }
 
     /** 直接用玻璃条已经读好的壁纸（动态壁纸只有这份能拿到）。 */
     void setWallpaper(android.graphics.Bitmap bmp) {
-        if (bmp == null || bmp == wallpaper) {
+        if (nativeMaterialsReady() || bmp == null || bmp == wallpaper) {
             return;
         }
         wallpaper = bmp;
         wallpaperShader = null;
-        glassBound = false;
-        // 换壁纸 → 玻璃底全部失效
-        ringBgKey[0] = Integer.MIN_VALUE;
-        ringBgKey[1] = Integer.MIN_VALUE;
         invalidate();
     }
 
-    /** 后台读一次锁屏壁纸，降采样后再做一次「缩放式模糊」，作为环里的玻璃折射源。 */
+    /** 仅兼容回退需要旧版壁纸背景；原生材质直接采样合成器，不再读图仿玻璃。 */
     void ensureWallpaper() {
-        if (wallpaperLoading) {
+        if (nativeMaterialsReady() || wallpaperLoading) {
             return;
         }
         // 已经有壁纸也要隔一会儿查一次 id：换了壁纸 / 动态壁纸更新，
@@ -747,10 +736,8 @@ final class LockWidgetView extends View {
                     if (wallpaper != bmp) {
                         bmp.recycle();
                     }
-                    glassBound = false;
+                    wallpaperShader = null;
                     wallId = id;
-                    ringBgKey[0] = Integer.MIN_VALUE;
-                    ringBgKey[1] = Integer.MIN_VALUE;
                     // 异步读完必须主动重绘，否则玻璃要等下一次其它刷新才出现
                     postInvalidate();
                 }
@@ -810,61 +797,5 @@ final class LockWidgetView extends View {
             small.recycle();
         }
         return big;
-    }
-
-    /** 按屏幕坐标建一次 BitmapShader（center-crop 铺满屏幕），后续直接复用。 */
-    private void ensureShader(int screenW, int screenH) {
-        android.graphics.Bitmap bmp = wallpaper;
-        if (bmp == null) {
-            return;
-        }
-        if (wallpaperShader != null && shaderW == screenW && shaderH == screenH) {
-            return;
-        }
-        float scale = Math.max(screenW / (float) bmp.getWidth(),
-                screenH / (float) bmp.getHeight());
-        android.graphics.Matrix m = new android.graphics.Matrix();
-        m.setScale(scale, scale);
-        m.postTranslate((screenW - bmp.getWidth() * scale) * 0.5f,
-                (screenH - bmp.getHeight() * scale) * 0.5f);
-        wallpaperShader = new android.graphics.BitmapShader(bmp,
-                android.graphics.Shader.TileMode.CLAMP,
-                android.graphics.Shader.TileMode.CLAMP);
-        wallpaperShader.setLocalMatrix(m);
-        shaderScale = scale;
-        shaderW = screenW;
-        shaderH = screenH;
-    }
-
-    private boolean bindGlass() {
-        resolveGlass();
-        if (mSetGlassEffect == null) {
-            return false;
-        }
-        if (glassBound) {
-            return true;
-        }
-        try {
-            mSetGlassEffect.invoke(null, glassPaint, Boolean.TRUE);
-            glassBound = true;
-            return true;
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    @Override
-    protected void onAttachedToWindow() {
-        super.onAttachedToWindow();
-        try {
-            Class<?> c = Class.forName("com.miui.clock.utils.MiuiBlurUtils");
-            c.getMethod("chooseBackgroundBlurContainer", View.class, View.class)
-                    .invoke(null, this, getRootView());
-            // 参照包里还调了这个：没有它，玻璃 shader 采样半径为 0，看上去就是透明
-            c.getMethod("setMiGlassBlurRadius", View.class, int.class, int.class)
-                    .invoke(null, this, 12, 12);
-        } catch (Throwable ignored) {
-            // 系统没有这套玻璃 API：保持普通半透明
-        }
     }
 }
